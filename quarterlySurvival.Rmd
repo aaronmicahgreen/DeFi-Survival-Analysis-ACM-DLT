@@ -1,0 +1,360 @@
+---
+title: "Create Survival Data"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+# Set the default CRAN repository
+local({r <- getOption("repos")
+       r["CRAN"] <- "http://cran.r-project.org" 
+       options(repos=r)
+})
+
+# Set code chunk defaults
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load required packages; install if necessary
+# CAUTION: DO NOT interrupt R as it installs packages!!
+if (!require("ggplot2")) {
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+if (!require("readr")) {
+  install.packages("readr")
+  library(readr)
+}
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dp)
+}
+
+if (!require("RColorBrewer")) {
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+if (!require("beeswarm")) {
+  install.packages("beeswarm")
+  library(beeswarm)
+}
+if (!require("tidyverse")) {
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if (!require("ggbeeswarm")) {
+  install.packages("ggbeeswarm")
+  library(ggbeeswarm)
+}
+if (!require("xts")) {
+  install.packages("xts")
+  library(xts)
+}
+if (!require("plotly")) {
+  install.packages("plotly")
+  library(plotly)
+}
+if(!require("lubridate")) {
+  install.packages("lubridate")
+  library(lubridate)
+}
+if(!require("survival")) {
+  install.packages("survival")
+  library(survival)
+}
+if(!require("survminer")) {
+  install.packages('survminer')
+  library(survminer)
+}
+if(!require("ranger")){
+  install.packages("ranger")
+  library(ranger)
+}
+if(!require("ggfortify")){
+  install.packages("ggfortify")
+  library(ggfortify)
+}
+
+```
+
+This notebook shows how to use the transaction data from a deployment of AAVE and turn it into a set of survival data for use in survival analysis.
+
+## Load the data from the IDEA server:
+
+First, we define the parts of the filepaths for loading the transaction data from the IDEA server:
+
+```{r}
+dataPath = "/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/"
+V2Path = paste0(dataPath, "V2/")
+V3Path = paste0(dataPath, "V3/")
+transactionsFile = "transactions.csv"
+clustersFile = "userClusters.csv"
+marketTypesFile = "marketTypes.csv"
+```
+
+```{r}
+allTransactions <- read_csv(paste0(V2Path, "Mainnet/", transactionsFile))
+```
+
+Next we do a bit of pre-processing, setting up a couple of helper functions and dataframes to give us some additional information about the transactions that will be useful when using the survival analysis data.
+
+```{r}
+# For consistency's sake, because we currently have to manually update the datasets and therefore there's no guarantee that they run to the same date,
+#   let's choose a cutoff date that remove data past that point:
+cutoffDate = "2022-10-01 00:00:00 UTC"
+
+coinStabilities <- allTransactions %>%
+  select(reserve) %>%
+  distinct() %>%
+  mutate(coinType = case_when(reserve %in% c("USDT", "USDC", "TUSD", "DAI", "SUSD", "USDT.e", "DAI.e", "USDC.e", "BUSD", "GUSD", "LUSD", "USDt", "1DAI", "1USDT", "1USDC", "fUSDT") ~ "Stable",
+                              TRUE ~ "Non-Stable"))
+
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+
+fullDF <- allTransactions %>%
+  mutate(datetime = as_datetime(timestamp)) %>%
+  filter(datetime <= cutoffDate) %>%
+  left_join(coinStabilities, by = "reserve") %>%
+  mutate(quarter = floor_date(datetime, unit = "quarter")) %>%
+  group_by(type) %>%
+  mutate(amountUSDQuartile = ntile(amountUSD, n = 4),
+         principalUSDQuartile = ntile(principalAmountUSD, n = 4),
+         collateralUSDQuartile = ntile(collateralAmountUSD, n = 4)) %>%
+  group_by(reserve) %>%
+  mutate(amountQuartile = ntile(amount, n = 4)) %>%
+  ungroup()
+
+quarters <- fullDF %>%
+    select(quarter) %>%
+    distinct() %>%
+    arrange(quarter)
+
+users <- fullDF %>%
+  select(user) %>%
+  distinct()
+
+survivalData <- NULL
+```
+```{r}
+sampleProportion = 0.2
+
+sampledUsers <- users %>%
+  slice_sample(prop = sampleProportion)
+
+
+df <- fullDF %>%
+  filter(user %in% sampledUsers$user)
+
+```
+
+
+```{r}
+
+for(timeStart in quarters$quarter){
+  timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
+
+  indexEvents <- df %>%
+    filter(type == "borrow",
+           quarter == timeStart) %>%
+    select(where(not_all_na)) %>%
+    mutate(ID = row_number(),
+           indexTime = timestamp,
+           indexAmountUSDQuartile = amountUSDQuartile,
+           indexMarketType = marketType)
+  
+  outcomeEvents <- df %>%
+    filter(type == "repay",
+           quarter == timeStart) %>%
+    select(where(not_all_na)) %>%
+    mutate(outcomeTime = timestamp,
+           outcomeAmountUSDQuartile = amountUSDQuartile,
+           outcomeMarketType = marketType)
+  
+  indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
+    group_by(ID) %>% 
+    mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
+                            is.na(outcomeTime) ~ 0,
+                            TRUE ~ 1)) %>%
+    distinct()
+  
+  rightCensoredEvents <- indexToOutcomes %>%
+    filter(status == 0) %>%
+    group_by(ID) %>%
+    summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    distinct()
+  
+  uncensoredEvents <- indexToOutcomes %>%
+    filter(status == 1) %>%
+    filter(outcomeTime > indexTime) %>%
+    summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    distinct()
+  
+  leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
+    mutate(status = 0) %>%
+    summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile, marketType = outcomeMarketType)
+  
+  survivalData <- bind_rows(survivalData, rightCensoredEvents, uncensoredEvents, leftCensoredEvents)
+}
+```
+
+```{r, fig.height = 10, fig.width=7.5}
+survData <- survivalData %>%
+  mutate(datetime = as_datetime(timeStart)) %>%
+  filter(timeStart != max(quarters$quarter),
+         timeStart != min(quarters$quarter)) %>%
+  mutate(quarter = paste0(year(datetime), " Q", quarter(datetime)))
+
+legendLabels <- survData %>%
+  group_by(quarter) %>%
+  summarise() %>%
+  arrange(quarter)
+
+# These colors were hand-picked from https://r-charts.com/colors/ with the attempt to align the colors with the seasons:
+quarterColors <- c("#98F5FF", # cadetBlue1
+                   "#FFBBFF", # plum1
+                   "#00CD66", # springgreen3
+                   "#CD4F39", # tomato2
+                   "#7AC5CD", # cadetBlue3
+                   "#CD96CD", # plum3
+                   "#008B45"  # springgreen4
+                   )
+
+survFit <- survfit(Surv(timeDiff/86400, as.numeric(status)) ~ quarter, data=survData)
+
+survPlot <- ggsurvplot(survFit, 
+                      censor = FALSE,
+                      title = "How Long Do Users Wait Before Making a Repayment?",
+                      xlab = "Time (days)",
+                      ylab = "Probability of No Repay",
+                      legend = "right",
+                      legend.labs = legendLabels$quarter,
+                      legend.title = "Year: Quarter",
+                      pval = TRUE,
+                      palette = quarterColors,
+                      risk.table = TRUE
+                      )
+survPlot
+```
+
+```{r, fig.height=10, fig.width = 7.5}
+fit <- coxph(Surv(timeDiff / 86400, as.numeric(status)) ~ reserveType + quarter + amountUSDQuartile + marketType, data = survData)
+ggcoxzph(cox.zph(fit))
+```
+
+```{r}
+ggforest(fit, data = survData)
+```
+
+```{r}
+survivalData <- NULL
+for(timeStart in quarters$quarter){
+  timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
+
+  indexEvents <- df %>%
+    filter(type == "deposit",
+           quarter == timeStart) %>%
+    select(where(not_all_na)) %>%
+    mutate(ID = row_number(),
+           indexTime = timestamp,
+           indexAmountUSDQuartile = amountUSDQuartile,
+           indexMarketType = marketType)
+  
+  outcomeEvents <- df %>%
+    filter(type == "redeem",
+           quarter == timeStart) %>%
+    select(where(not_all_na)) %>%
+    mutate(outcomeTime = timestamp,
+           outcomeAmountUSDQuartile = amountUSDQuartile,
+           outcomeMarketType = marketType)
+  
+  indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
+    group_by(ID) %>% 
+    mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
+                            is.na(outcomeTime) ~ 0,
+                            TRUE ~ 1)) %>%
+    distinct()
+  
+  rightCensoredEvents <- indexToOutcomes %>%
+    filter(status == 0) %>%
+    group_by(ID) %>%
+    summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    distinct()
+  
+  uncensoredEvents <- indexToOutcomes %>%
+    filter(status == 1) %>%
+    filter(outcomeTime > indexTime) %>%
+    summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    distinct()
+  
+  leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
+    mutate(status = 0) %>%
+    summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile, marketType = outcomeMarketType)
+  
+  survivalData <- bind_rows(survivalData, rightCensoredEvents, uncensoredEvents, leftCensoredEvents)
+}
+```
+
+```{r, fig.height=10, fig.width=7.5}
+survData <- survivalData %>%
+  mutate(datetime = as_datetime(timeStart)) %>%
+  filter(timeStart != max(quarters$quarter),
+         timeStart != min(quarters$quarter)) %>%
+  mutate(quarter = paste0(year(datetime), " Q", quarter(datetime))) %>%
+  select(-datetime, -timeStart)
+
+legendLabels <- survData %>%
+  group_by(quarter) %>%
+  summarise() %>%
+  arrange(quarter)
+
+# These colors were hand-picked from https://r-charts.com/colors/ with the attempt to align the colors with the seasons:
+quarterColors <- c("#98F5FF", # cadetBlue1
+                   "#FFBBFF", # plum1
+                   "#00CD66", # springgreen3
+                   "#CD4F39", # tomato2
+                   "#7AC5CD", # cadetBlue3
+                   "#CD96CD", # plum3
+                   "#008B45"  # springgreen4
+                   )
+
+survFit <- survfit(Surv(timeDiff/86400, as.numeric(status)) ~ quarter, data=survData)
+
+survPlot <- ggsurvplot(survFit, 
+                      censor = FALSE,
+                      title = "How Long Do Users Leave Funds In Their Account?",
+                      xlab = "Time (days)",
+                      ylab = "Probability of No Withdrawal",
+                      legend = "right",
+                      legend.labs = legendLabels$quarter,
+                      legend.title = "Year: Quarter",
+                      pval = TRUE,
+                      palette = quarterColors,
+                      risk.table = TRUE
+                      )
+survPlot
+```
+
+```{r, fig.height=10, fig.width = 7.5}
+fit <- coxph(Surv(timeDiff / 86400, as.numeric(status)) ~ quarter, data = survData)
+ggcoxzph(cox.zph(fit))
+```
+
+```{r, fig.width=7.5, fig.height=7.5}
+ggforest(fit, data = survData, fontsize = 1.1, main = "How Does Time to Repayment Compare Between Quarters?")
+```
+
+```{r}
+averageLoanSizesByQuarter <- fullDF %>%
+  filter(type == "borrow") %>%
+  dplyr::group_by(quarter) %>%
+  dplyr::summarize(meanLoanSize = mean(amountUSD))
+
+averageDepositSizesByQuarter <- fullDF %>%
+  filter(type == "deposit") %>%
+  dplyr::group_by(quarter) %>%
+  dplyr::summarize(meanDepositSize = mean(amountUSD))
+```
