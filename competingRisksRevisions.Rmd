@@ -1,0 +1,97 @@
+```{r}
+library(lubridate)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+# Load the AaveV2 Ethereum transaction data and filter out transactions after October 1, 2022 since 
+# this is the data we used in the original paper
+
+transactions <- read_rds("/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/V2/Mainnet/transactions.rds")
+
+# Run the files to make the functions that create the survival data:
+source("./Survival_Data_Creation/createSurvData.R")
+
+tFinal <- as_datetime(ymd("2022-10-01"))
+
+transactions <- transactions %>%
+  filter(timestamp <= tFinal)
+
+## Helper functions
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+
+```
+
+```{r}
+# For this notebook, we just need to recreate a few of our analyses with competing risks. 
+
+# First, lets recreate figure 2, which is the figure showing the likelihood of each event type being the next event after a deposit.
+
+indexEventSet <- c("deposit")
+outcomeEventSet <- c("withdraw", "borrow", "repay", "liquidation")
+subjects <- c("user")
+indexCovariates <- c()
+outcomeCovariates <- c("type")
+observationPeriod <- c(0, tFinal)
+
+depositToAll <- createSurvData(indexEventSet, outcomeEventSet, transactions, subjects, observationPeriod, indexCovariates, outcomeCovariates)
+
+depositToAll <- depositToAll %>%
+  mutate(endpoint = as_factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "deposit") %>%
+  dplyr::select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate)
+
+smallSet <- depositToAll %>%
+  slice_sample(prop = 0.25)
+
+
+fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = depositToAll, id=id, istate=istate)
+
+plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
+```
+
+```{r}
+indexEventSet <- c("borrow")
+outcomeEventSet <- c("repay", "liquidation")
+transactions <- transactions %>%
+  mutate(reserve = case_when(type == "liquidation" ~ principalReserve,
+                             TRUE ~ reserve)) %>%
+  mutate()
+subjects <- c("user",
+              "reserve")
+indexCovariates <- c()
+outcomeCovariates <- c("type")
+observationPeriod <- c(0, tFinal)
+  
+borrowToOutcome <- createSurvData(indexEventSet, outcomeEventSet, transactions, subjects, observationPeriod, indexCovariates, outcomeCovariates)
+
+
+borrowToOutcome <- borrowToOutcome %>%
+  mutate(endpoint = as_factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "borrow") %>%
+  select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate)
+
+smallSet <- borrowToOutcome %>%
+  slice_sample(prop = 0.25)
+
+
+fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id, istate=istate)
+plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
+```
+
+```{r}
+```
