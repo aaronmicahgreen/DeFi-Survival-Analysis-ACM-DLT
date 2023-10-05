@@ -12,14 +12,16 @@ library(timereg)
 # this is the data we used in the original paper
 
 transactions <- read_rds("/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/V2/Mainnet/transactions.rds")
-
+coinTypes <- read_csv("/data/IDEA_DeFi_Research/Data/Coin_Info/stablecoins.csv")
 # Run the files to make the functions that create the survival data:
 source("./Survival_Data_Creation/createSurvData.R")
 
 tFinal <- as_datetime(ymd("2022-10-01"))
 
 transactions <- transactions %>%
-  filter(timestamp <= tFinal)
+  filter(timestamp <= tFinal) %>%
+  mutate(coinType = case_when(reserve %in% coinTypes$symbol ~ "Stable",
+                              TRUE ~ "Non-Stable"))
 
 ## Helper functions
 not_all_na <- function(x) any(!is.na(x))
@@ -64,7 +66,7 @@ smallSet <- depositToAll %>%
   slice_sample(prop = 0.05)
 
 
-fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = depositToAll, id=id, istate=istate)
+fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id, istate=istate)
 
 plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
 ```
@@ -78,7 +80,7 @@ transactions <- transactions %>%
   mutate()
 subjects <- c("user",
               "reserve")
-indexCovariates <- c()
+indexCovariates <- c("coinType")
 outcomeCovariates <- c("type")
 observationPeriod <- c(0, tFinal)
   
@@ -93,10 +95,11 @@ borrowToOutcome <- borrowToOutcome %>%
   select(id = indexID,
          time = timeDiff,
          endpoint,
-         istate)
+         istate,
+         coinType)
 
 smallSet <- borrowToOutcome %>%
-  slice_sample(prop = 0.25)
+  slice_sample(prop = 0.05)
 
 
 fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id, istate=istate)
@@ -124,6 +127,20 @@ addclust<-comp.risk(Event(time,cause)~+1+survival::cluster(clust),
 
 pad <- predict(addclust,X=1)
 plot(pad)
+```
+```{r}
+smallSet <- smallSet %>%
+  mutate(cause = as.numeric(endpoint)) %>%
+  drop_na()
+test <- comp.risk(Event(time/86400, cause, cens.code=1)~coinType,
+                  data=smallSet,
+                  cause=3,
+                    resample.iid=1,
+                    n.sim=100,
+                    model="prop")
+summary(test)
+par(mfrow=c(2,4))
+plot(test)
 ```
 
 ```{r}
