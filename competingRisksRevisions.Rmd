@@ -5,6 +5,9 @@ library(survminer)
 library(ggplot2)
 library(dplyr)
 library(timereg)
+library(tidycmprsk)
+library(tidyr)
+library(gtsummary)
 ```
 
 ```{r}
@@ -106,6 +109,40 @@ fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id,
 plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
 ```
 
+```{r}
+smallSet <- smallSet %>%
+  mutate(cause = as.numeric(endpoint)) %>%
+  drop_na()
+
+crr(Surv(time, endpoint) ~ coinType, data = smallSet) %>% 
+  tbl_regression(exp = TRUE)
+
+cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) %>% 
+  ggcuminc() + 
+  labs(x = "Days") + 
+  add_confidence_interval()
+
+
+
+group <- rep(1, nrow(smallSet))
+fit <- cuminc(smallSet$time, smallSet$cause, group, strata = smallSet$coinType, cencode = 1)
+plot(fit, main = 'cmprsk', xlab = 'Days')
+summary(fit)
+
+
+test <- comp.risk(Event(time/86400, cause, cens.code=1) ~ coinType,
+                  data=smallSet,
+                  cause=3,
+                  resample.iid=1,
+                  n.sim=5000,
+                  model="prop")
+summary(test)
+pout1 <- predict(test, X = 2)
+pout1 <- predict(test, X = 3)
+plot(pout1, xlim = c(0, 570), xlab = 'Days', main = 'timereg', uniform = 0, se = 0)
+```
+
+
 ## Sample Code for Comp.Risk function:
 
 ```{r}
@@ -128,20 +165,7 @@ addclust<-comp.risk(Event(time,cause)~+1+survival::cluster(clust),
 pad <- predict(addclust,X=1)
 plot(pad)
 ```
-```{r}
-smallSet <- smallSet %>%
-  mutate(cause = as.numeric(endpoint)) %>%
-  drop_na()
-test <- comp.risk(Event(time/86400, cause, cens.code=1)~coinType,
-                  data=smallSet,
-                  cause=3,
-                    resample.iid=1,
-                    n.sim=100,
-                    model="prop")
-summary(test)
-par(mfrow=c(2,4))
-plot(test)
-```
+
 
 ```{r}
 add<-comp.risk(Event(time,cause)~platelet+age+tcell,
