@@ -7,7 +7,8 @@ library(dplyr)
 library(timereg)
 library(tidycmprsk)
 library(tidyr)
-library(gtsummary)
+library(ggsurvfit)
+library(cmprsk)
 ```
 
 ```{r}
@@ -114,32 +115,32 @@ smallSet <- smallSet %>%
   mutate(cause = as.numeric(endpoint)) %>%
   drop_na()
 
-crr(Surv(time, endpoint) ~ coinType, data = smallSet) %>% 
-  tbl_regression(exp = TRUE)
+tidycmprsk::crr(Surv(time/86400, endpoint) ~ coinType, data = smallSet)
 
-cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) %>% 
+tidycmprsk::cuminc(Surv(time/86400, endpoint) ~ coinType, data = smallSet) %>% 
   ggcuminc() + 
   labs(x = "Days") + 
-  add_confidence_interval()
+  add_confidence_interval() + 
+  ggtitle(label = "How Does Coin Type Affect Repayment time? - Cumulative Incidence Function")
 
 
 
-group <- rep(1, nrow(smallSet))
-fit <- cuminc(smallSet$time, smallSet$cause, group, strata = smallSet$coinType, cencode = 1)
-plot(fit, main = 'cmprsk', xlab = 'Days')
-summary(fit)
-
-
-test <- comp.risk(Event(time/86400, cause, cens.code=1) ~ coinType,
-                  data=smallSet,
-                  cause=3,
-                  resample.iid=1,
-                  n.sim=5000,
-                  model="prop")
-summary(test)
-pout1 <- predict(test, X = 2)
-pout1 <- predict(test, X = 3)
-plot(pout1, xlim = c(0, 570), xlab = 'Days', main = 'timereg', uniform = 0, se = 0)
+# group <- rep(1, nrow(smallSet))
+# fit <- cuminc(smallSet$time, smallSet$cause, group, strata = smallSet$coinType, cencode = 1)
+# plot(fit, main = 'cmprsk', xlab = 'Days')
+# summary(fit)
+# 
+# 
+# test <- comp.risk(Event(time/86400, cause, cens.code=1) ~ coinType,
+#                   data=smallSet,
+#                   cause=3,
+#                   resample.iid=1,
+#                   n.sim=5000,
+#                   model="prop")
+# summary(test)
+# pout1 <- predict(test, X = 2)
+# pout1 <- predict(test, X = 3)
+# plot(pout1, xlim = c(0, 570), xlab = 'Days', main = 'timereg', uniform = 0, se = 0)
 ```
 
 
