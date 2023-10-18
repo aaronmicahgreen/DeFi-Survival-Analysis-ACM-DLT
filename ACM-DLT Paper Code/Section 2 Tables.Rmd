@@ -1,0 +1,224 @@
+
+```{r}
+# Generate transactions summaries for each deployment of Aave:
+dataPath <- "~/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/"
+
+mainnetPath <- paste0(dataPath, "V2/Mainnet/")
+maticV2Path <- paste0(dataPath, "V2/Matic/")
+avaxV2Path <- paste0(dataPath, "V2/Avalanche/")
+
+arbitrumV3Path <- paste0(dataPath, "V3/Arbitrum/")
+avaxV3Path <- paste0(dataPath, "V3/Avalanche/")
+fantomV3Path <- paste0(dataPath, "V3/Fantom/")
+harmonyV3Path <- paste0(dataPath, "V3/Harmony/")
+maticV3Path <- paste0(dataPath, "V3/Matic/")
+optimismV3Path <- paste0(dataPath, "V3/Optimism/")
+
+transactionsFile <- "transactions.csv"
+
+mainnetTransactions <- read_csv(paste0(mainnetPath, transactionsFile))
+
+mainnetSummary <- mainnetTransactions %>%
+  group_by(type) %>%
+  summarize(count = n(), meanValue = mean(amountUSD), medianValue = median(amountUSD), meanAmountPrincipal = mean(principalAmountUSD), meanAmountCollateral = mean(collateralAmountUSD)) %>%
+  ungroup()
+
+mainnetLiq <- mainnetTransactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), meanAmountPrincipal = mean(principalAmountUSD), meanAmountCollateral = mean(collateralAmountUSD))
+
+mainnetSummary
+mainnetLiq
+```
+
+```{r}
+maticV2Transactions <- read_csv(paste0(maticV2Path, transactionsFile))
+
+maticV2Summary <- maticV2Transactions %>%
+  group_by(type) %>%
+  summarize(count = n(), meanValue = mean(amountUSD), medianValue = median(amountUSD), meanAmountPrincipal = mean(principalAmountUSD), meanAmountCollateral = mean(collateralAmountUSD)) %>%
+  ungroup()
+
+maticV2Liq <- maticV2Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), meanAmountPrincipal = mean(principalAmountUSD), meanAmountCollateral = mean(collateralAmountUSD))
+
+maticV2Summary
+maticV2Liq
+```
+
+```{r}
+avaxV2Transactions <- read_csv(paste0(avaxV2Path, transactionsFile))
+
+avaxV2Summary <- avaxV2Transactions %>%
+  group_by(type) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8)) %>%
+  ungroup()
+
+avaxV2Liq <- avaxV2Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), meanAmountPrincipal = mean(principalAmountUSD/1e8), meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+avaxV2Summary
+avaxV2Liq
+```
+```{r}
+optimismTransactions <- read_csv(paste0(optimismV3Path, transactionsFile))
+
+optimismSummary <- optimismTransactions %>%
+  group_by(type) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8)) %>%
+  ungroup()
+
+optimismLiq <- optimismTransactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD/1e8),
+         !is.na(collateralAmountUSD/1e8)) %>%
+  summarize(count = n(), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+optimismSummary
+optimismLiq
+```
+
+```{r}
+avaxV3Transactions <- read_csv(paste0(avaxV3Path, transactionsFile))
+
+avaxV3Summary <- avaxV3Transactions %>%
+  group_by(type) %>%
+  filter(!is.na(amountUSD)) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8)) %>%
+  ungroup()
+
+avaxV3Liq <- avaxV3Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), meanAmountPrincipal = mean(principalAmountUSD/1e8), meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+avaxV3Summary
+avaxV3Liq
+```
+
+```{r}
+maticV3Transactions <- read_csv(paste0(maticV3Path, transactionsFile))
+
+maticV3Summary <- maticV3Transactions %>%
+  group_by(type) %>%
+  filter(!is.na(amountUSD)) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8)) %>%
+  ungroup()
+
+maticV3Liq <- maticV3Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+maticV3Summary
+maticV3Liq
+```
+
+```{r}
+arbitrumV3Transactions <- read_csv(paste0(arbitrumV3Path, transactionsFile))
+
+arbitrumV3Summary <- arbitrumV3Transactions %>%
+  group_by(type) %>%
+  filter(!is.na(amountUSD)) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8)) %>%
+  ungroup()
+
+arbitrumV3Liq <- arbitrumV3Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+arbitrumV3Summary
+arbitrumV3Liq
+```
+
+```{r}
+fantomV3Transactions <- read_csv(paste0(fantomV3Path, transactionsFile))
+
+fantomV3Summary <- fantomV3Transactions %>%
+  group_by(type) %>%
+  filter(!is.na(amountUSD)) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8)) %>%
+  ungroup()
+
+fantomV3Liq <- fantomV3Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+fantomV3Summary
+fantomV3Liq
+```
+```{r}
+harmonyV3Transactions <- read_csv(paste0(harmonyV3Path, transactionsFile))
+
+harmonyV3Summary <- harmonyV3Transactions %>%
+  group_by(type) %>%
+  filter(!is.na(amountUSD)) %>%
+  summarize(count = n(), 
+            meanValue = mean(amountUSD/1e8), 
+            medianValue = median(amountUSD/1e8)) %>%
+  ungroup()
+
+harmonyV3Liq <- harmonyV3Transactions %>%
+  filter(type == "liquidation",
+         !is.na(principalAmountUSD),
+         !is.na(collateralAmountUSD)) %>%
+  summarize(count = n(), 
+            meanAmountPrincipal = mean(principalAmountUSD/1e8), 
+            meanAmountCollateral = mean(collateralAmountUSD/1e8))
+
+harmonyV3Summary
+harmonyV3Liq
+```
+
+```{r}
+stableCoins <- read_csv("~/data/IDEA_DeFi_Research/Data/Coin_Info/stablecoins.csv")
+mainnetCoinTypes <- mainnetTransactions %>%
+  select(reserve) %>%
+  distinct() %>%
+  mutate(`Coin Type` = case_when(reserve %in% stableCoins$reserve ~ "Stable",
+                                 TRUE ~ "Non-Stable"))
+mainnetCoinTypes
+
+print(xtable(mainnetCoinTypes, align="l|r|r|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(mainnetCoinTypes), 0:(nrow(mainnetCoinTypes)-1))
+      )
+```

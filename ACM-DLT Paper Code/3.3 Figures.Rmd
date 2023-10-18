@@ -1,0 +1,519 @@
+```{r}
+if (!require("ggplot2")) {
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dp)
+}
+
+if (!require("RColorBrewer")) {
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+if (!require("beeswarm")) {
+  install.packages("beeswarm")
+  library(beeswarm)
+}
+if (!require("tidyverse")) {
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if (!require("ggbeeswarm")) {
+  install.packages("ggbeeswarm")
+  library(ggbeeswarm)
+}
+if (!require("xts")) {
+  install.packages("xts")
+  library(xts)
+}
+if (!require("plotly")) {
+  install.packages("plotly")
+  library(plotly)
+}
+if(!require("lubridate")) {
+  install.packages("lubridate")
+  library(lubridate)
+}
+if(!require("survival")) {
+  install.packages("survival")
+  library(survival)
+}
+if(!require("survminer")) {
+  install.packages('survminer')
+  library(survminer)
+}
+if(!require("ranger")){
+  install.packages("ranger")
+  library(ranger)
+}
+if(!require("ggfortify")){
+  install.packages("ggfortify")
+  library(ggfortify)
+}
+if(!require("ggpubr")){
+  install.packages("ggpubr")
+  library(ggpubr)
+}
+if(!require("svglite")){
+  install.packages("svglite")
+  library(svglite)
+}
+if(!require("visreg")){
+  install.packages("visreg")
+  library(visreg)
+}
+
+if(!require("casebase")){
+  install.packages("casebase")
+  library(casebase)
+}
+
+if(!require("splines")){
+  install.packages("splines")
+  library(splines)
+}
+pubFontSize = 18
+pubWidth = 8
+pubHeight = 6
+pubColorScheme = "Set1"
+```
+
+```{r}
+# Generate transactions summaries for each deployment of Aave:
+dataPath <- "~/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/"
+
+mainnetPath <- paste0(dataPath, "V2/Mainnet/")
+maticV2Path <- paste0(dataPath, "V2/Matic/")
+avaxV2Path <- paste0(dataPath, "V2/Avalanche/")
+
+arbitrumV3Path <- paste0(dataPath, "V3/Arbitrum/")
+avaxV3Path <- paste0(dataPath, "V3/Avalanche/")
+fantomV3Path <- paste0(dataPath, "V3/Fantom/")
+harmonyV3Path <- paste0(dataPath, "V3/Harmony/")
+maticV3Path <- paste0(dataPath, "V3/Matic/")
+optimismV3Path <- paste0(dataPath, "V3/Optimism/")
+
+transactionsFile <- "transactions.csv"
+
+mainnetTransactions <- read_csv(paste0(mainnetPath, transactionsFile))
+optimismV3Transactions <- read_csv(paste0(optimismV3Path, transactionsFile))
+avaxV3Transactions <- read_csv(paste0(avaxV3Path, transactionsFile))
+arbitrumV3Transactions <- read_csv(paste0(arbitrumV3Path, transactionsFile))
+fantomV3Transactions <- read_csv(paste0(fantomV3Path, transactionsFile))
+harmonyV3Transactions <- read_csv(paste0(harmonyV3Path, transactionsFile))
+maticV3Transactions <- read_csv(paste0(maticV3Path, transactionsFile))
+
+```
+
+```{r}
+# Prepare mainnet transactions for creating survival data:
+sampleProportion = 1
+set.seed(69420)
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+
+coinStabilities <- mainnetTransactions %>%
+  select(reserve) %>%
+  distinct() %>%
+  mutate(coinType = case_when(reserve %in% c("USDT", "USDC", "TUSD", "DAI", "SUSD", "USDT.e", "DAI.e", "USDC.e", "BUSD", "GUSD", "LUSD", "USDt", "1DAI", "1USDT", "1USDC", "fUSDT") ~ "Stable",
+                              TRUE ~ "Non-Stable"))
+
+allTransactions <- mainnetTransactions %>%
+  left_join(coinStabilities, by = "reserve")
+
+allTransactions <- allTransactions %>%
+  mutate(datetime = as_datetime(timestamp),
+         quarter = floor_date(datetime, unit = "quarter")) %>%
+  group_by(type) %>%
+  mutate(amountUSDQuartile = ntile(amountUSD, n = 4),
+         principalUSDQuartile = ntile(principalAmountUSD, n = 4),
+         collateralUSDQuartile = ntile(collateralAmountUSD, n = 4)) %>%
+  group_by(reserve) %>%
+  mutate(amountQuartile = ntile(amount, n = 4)) %>%
+  ungroup() 
+
+users <- allTransactions %>%
+  select(user) %>%
+  distinct()
+
+sampledUsers <- users %>%
+  slice_sample(prop = sampleProportion)
+
+sampledTransactions <- allTransactions %>%
+  filter(user %in% sampledUsers$user)
+
+quarters <- allTransactions %>%
+  select(quarter) %>%
+  distinct() %>%
+  arrange(quarter)
+```
+
+```{r}
+#####
+# Create Deposit-To-Redeem by quarter:
+#####
+indexEvent = "deposit"
+outcomeEvent = "redeem"
+
+
+# We create the survival data below:
+survivalData <- NULL
+# Loop through each quarter present in the data. These will be appended one by one
+# to the survivalData dataframe and saved to disk after they are all computed:
+for(timeStart in quarters$quarter){
+  # For right-censored events, the end of the quarter will be the time the observation stops:
+  timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
+
+  # Collect the index events for this quarter, and select the relevant features:
+      indexEvents <- sampledTransactions %>%
+        filter(type == indexEvent,
+               quarter == timeStart)  %>%
+        mutate(ID = row_number(),
+               indexTime = timestamp,
+               indexAmountUSDQuartile = amountUSDQuartile,
+               indexMarketTrend = marketTrend) %>%
+        select(where(not_all_na))
+      
+      # Collect the outcome events for this quarter, and select the relevant features:
+      outcomeEvents <- sampledTransactions %>%
+        filter(type == outcomeEvent,
+               quarter == timeStart) %>%
+        mutate(outcomeTime = timestamp,
+               outcomeAmountUSDQuartile = amountUSDQuartile,
+               outcomeMarketTrend = marketTrend) %>%
+        select(where(not_all_na))
+      
+      # If there are no index or outcome events, go to the next iteration of the loop
+      if(length(indexEvents) == 0 && length(outcomeEvents) == 0){
+        next
+      }
+      
+      # If there are both index and outcome events, compute the uncensored data first:
+      if(length(indexEvents) > 0 && length(outcomeEvents) > 0){
+        # Create all possible combinations of index and outcome events that match 
+        # the user and reserve. From this we will narrow down the combinations to only 
+        # those which are meaningful, i.e. combinations where the outcome events occur 
+        # after the index event:
+        indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
+          group_by(ID) %>% 
+          mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
+                                    is.na(outcomeTime) ~ 0,
+                                    TRUE ~ 1)) %>%
+          distinct()
+        
+        # For uncensored events, we summarise using features from the index event when necessary and 
+        # calculate the time-to-outcome as the outcome event time minus the index event time:
+        uncensoredEvents <- indexToOutcomes %>%
+          filter(status == 1) %>%
+          filter(outcomeTime > indexTime) %>%
+          summarise(user, 
+                    timeDiff = min(outcomeTime) - indexTime, 
+                    status, 
+                    reserve, 
+                    reserveType = coinType.x, 
+                    timeStart, 
+                    amountUSDQuartile = indexAmountUSDQuartile, 
+                    marketTrend = indexMarketTrend) %>%
+          distinct()
+        
+        survivalData <- bind_rows(survivalData, uncensoredEvents)
+      }
+      
+      
+      # Compute right-censored events depending on whether there are outcome events:
+      if(length(indexEvents) != 0){
+        
+        if(length(outcomeEvents) == 0){
+          # For right-censored events, we summarise using features from the index event and calculate the 
+          # time-to-censorship using the timeFinal from above and the index time:
+          rightCensoredEvents <- indexEvents %>%
+            mutate(status = 0) %>%
+            summarise(user, 
+                      timeDiff = as.double(timeFinal - indexTime), 
+                      status, 
+                      reserve, 
+                      reserveType = coinType, 
+                      timeStart, 
+                      amountUSDQuartile = indexAmountUSDQuartile, 
+                      marketTrend = indexMarketTrend) %>%
+            distinct()
+        }else{
+          # For right-censored events, we summarise using features from the index event and calculate the 
+          # time-to-censorship using the timeFinal from above and the index time:
+          rightCensoredEvents <- indexToOutcomes %>%
+            filter(status == 0) %>%
+            group_by(ID) %>%
+            summarise(user, 
+                      timeDiff = as.double(timeFinal - indexTime), 
+                      status, 
+                      reserve, 
+                      reserveType = coinType.x, 
+                      timeStart, 
+                      amountUSDQuartile = indexAmountUSDQuartile, 
+                      marketTrend = indexMarketTrend) %>%
+            distinct()
+        }
+        
+        survivalData <- bind_rows(survivalData, rightCensoredEvents)
+        
+      }
+      # If there are any outcome events, compute the proper left-censored events:
+      if(length(outcomeEvents) != 0){
+        
+        if(length(indexEvents) == 0){
+          # For left-censored events, we need to find all outcome events that were not preceded
+          # by the relevant index event. We use features from the outcome event when necessary,
+          # and calculate the time-to-outcome as the start of the quarter to the time of the outcome:
+          leftCensoredEvents <- outcomeEvents %>%
+            mutate(status = 0) %>%
+            summarise(user, 
+                      timeDiff = as.double(outcomeTime - timeStart), 
+                      status, 
+                      reserve, 
+                      reserveType = coinType, 
+                      timeStart, 
+                      amountUSDQuartile = outcomeAmountUSDQuartile, 
+                      marketTrend = outcomeMarketTrend)
+          
+        }else{
+          # For left-censored events, we need to find all outcome events that were not preceded
+          # by the relevant index event. We use features from the outcome event when necessary,
+          # and calculate the time-to-outcome as the start of the quarter to the time of the outcome:
+          leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
+            mutate(status = 0) %>%
+            summarise(user, 
+                      timeDiff = as.double(outcomeTime - timeStart), 
+                      status, 
+                      reserve, 
+                      reserveType = coinType, 
+                      timeStart, 
+                      amountUSDQuartile = outcomeAmountUSDQuartile, 
+                      marketTrend = outcomeMarketTrend)
+        }
+        
+        survivalData <- bind_rows(survivalData, leftCensoredEvents)
+      }
+  
+}
+
+survivalData <- survivalData %>%
+      mutate(datetime = as_datetime(timeStart)) %>%
+      filter(timeStart != max(quarters$quarter),
+             timeStart != min(quarters$quarter)) %>%
+      mutate(quarter = paste0(year(datetime), " Q", quarter(datetime))) %>%
+      select(-timeStart, -datetime) %>%
+      rename(Reserve = reserve, 
+             Reserve_Type = reserveType,
+             USD_Amount_Quartile = amountUSDQuartile,
+             Market_Trend = marketTrend,
+             Quarter = quarter)
+
+
+
+
+
+#####
+# Make plot for quarterly deposit-to-redeem:
+#####
+
+survivalData$Quarter <- as.factor(survivalData$Quarter)
+
+quarters <- survivalData %>%
+  select(Quarter) %>%
+  group_by(Quarter) %>%
+  summarize(count = n()) %>%
+  ungroup() %>%
+  distinct() %>%
+  mutate(totalCount = sum(count),
+         percentage = count / totalCount)
+
+fit <- surv_fit(Surv(timeDiff/86400, status) ~ Quarter, data = survivalData)
+
+kmPlot <- ggsurvplot(fit,
+                     censor = FALSE,
+                     #title = "How Long Are Users Keeping Funds In Aave?",
+                     xlab = "Time (Days)",
+                     ylab = "Probability of Remaining Account Balance",
+                     legend.title = "Quarter",
+                     legend.labs = c("2021 Q1 (15.3%)", 
+                                     "2021 Q2 (24.7%)", 
+                                     "2021 Q3 (16.2%)", 
+                                     "2021 Q4 (9.50%)", 
+                                     "2022 Q1 (7.79%)", 
+                                     "2022 Q2 (13.1%)", 
+                                     "2022 Q3 (13.5%)"),
+                     conf.int = TRUE,
+                     pval = TRUE,
+                     pval.coord = c(80, 0.075),
+                     pval.size = pubFontSize,
+                     legend = c(0.8, 0.3))
+
+# Print the plot to a pdf:
+image=ggpubr::ggpar(kmPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/depositToRedeemByQuarter.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+```
+
+```{r}
+coxFit <- coxph(Surv(timeDiff/86400, status) ~ as.factor(Quarter), data = survivalData)
+coxFit
+summary(coxFit)
+```
+
+```{r}
+#####
+# Compute quarterly loan repayment schedules:
+#####
+# For each borrow, we will try to calculate the event at which it is fully repaid
+borrows <- sampledTransactions %>%
+  filter(type == "borrow") %>%
+  select(where(not_all_na)) %>%
+  mutate(ID = row_number()) %>%
+  rename(borrowTimestamp = timestamp)
+
+repays <- sampledTransactions %>%
+  filter(type == "repay") %>%
+  select(where(not_all_na)) %>%
+  rename(repayTimestamp = timestamp)
+
+fullRepayments <- borrows %>%
+  group_by(ID) %>%
+  left_join(repays, by = c("user", "reserve")) %>%
+  filter(repayTimestamp >= borrowTimestamp) %>%
+  arrange(repayTimestamp) %>%
+  mutate(amountRepaid = cumsum(amount.y)) %>%
+  filter(amountRepaid >= amount.x) %>%
+  slice_head() %>%
+  summarize(borrowTxId = id.x, user, reserve,
+            amountBorrowed = amount.x, amountRepaid, 
+            timestamp = repayTimestamp, datetime = datetime.y, quarter = quarter.y, 
+            type = "Full Repay", coinType = coinType.y,
+            version = version.y, deployment = deployment.y, marketTrend = marketTrend.y,
+            amountUSDQuartile = amountUSDQuartile.x, amountQuartile = amountQuartile.x) %>%
+  ungroup() %>%
+  select(-ID)
+
+# We create the quarterly survival data below:
+survivalData <- NULL
+quarters <- allTransactions %>%
+  select(quarter) %>%
+  distinct() %>%
+  arrange(quarter)
+# Loop through each quarter present in the data. These will be appended one by one
+# to the survivalData dataframe and saved to disk after they are all computed:
+for(timeStart in quarters$quarter){
+  # For right-censored events, the end of the quarter will be the time the observation stops:
+  timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
+  
+  # Use the borrows df from above as our index events:
+  indexEvents <- sampledTransactions %>%
+    filter(type == "borrow",
+           quarter == timeStart) %>%
+    mutate(ID = row_number(),
+           indexTime = timestamp,
+           indexAmountUSDQuartile = amountUSDQuartile,
+           indexMarketTrend = marketTrend)
+  
+  # Use full repayments as our outcome events:
+  outcomeEvents <- fullRepayments %>%
+    filter(quarter == timeStart) %>%
+    mutate(outcomeTime = timestamp,
+           outcomeAmountUSDQuartile = amountUSDQuartile,
+           outcomeMarketTrend = marketTrend)
+  
+  # Create all possible combinations of index and outcome events that match 
+  # the user and reserve. From this we will narrow down the combinations to only 
+  # those which are meaningful, i.e. combinations where the outcome events occur 
+  # after the index event:
+  indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
+    group_by(ID) %>% 
+    mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
+                              is.na(outcomeTime) ~ 0,
+                              TRUE ~ 1)) %>%
+    distinct()
+  
+  # For right-censored events, we summarise using features from the index event and calculate the 
+  # time-to-censorship using the timeFinal from above and the index time:
+  rightCensoredEvents <- indexToOutcomes %>%
+    filter(status == 0) %>%
+    group_by(ID) %>%
+    summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketTrend = indexMarketTrend) %>%
+    distinct()
+  
+  # For uncensored events, we summarise using features from the index event when necessary and 
+  # calculate the time-to-outcome as the outcome event time minus the index event time:
+  uncensoredEvents <- indexToOutcomes %>%
+    filter(status == 1) %>%
+    filter(outcomeTime > indexTime) %>%
+    summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketTrend = indexMarketTrend) %>%
+    distinct()
+  
+  # For left-censored events, we need to find all outcome events that were not preceded
+  # by the relevant index event. We use features from the outcome event when necessary,
+  # and calculate the time-to-outcome as the start of the quarter to the time of the outcome:
+  leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
+    mutate(status = 0) %>%
+    summarise(user, timeDiff = as.double(outcomeTime - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile, marketTrend = outcomeMarketTrend)
+  
+  survivalData <- bind_rows(survivalData, rightCensoredEvents, uncensoredEvents, leftCensoredEvents)
+}
+
+survivalData <- survivalData %>%
+  mutate(datetime = as_datetime(timeStart)) %>%
+  filter(timeStart != max(quarters$quarter),
+         timeStart != min(quarters$quarter)) %>%
+  mutate(quarter = paste0(year(datetime), " Q", quarter(datetime))) %>%
+  select(-timeStart, -datetime) %>%
+  rename(Reserve = reserve, 
+         Reserve_Type = reserveType,
+         USD_Amount_Quartile = amountUSDQuartile,
+         Market_Trend = marketTrend,
+         Quarter = quarter)
+#####
+# Make plot for quarterly loan-to-full-repayment:
+#####
+
+fit <- surv_fit(Surv(timeDiff/86400, status) ~ Quarter, data = survivalData)
+kmPlot <- ggsurvplot(fit,
+                     censor = FALSE,
+                     #title = "How Have Loan Repayment Schedules Varied Quarter-to-Quarter?",
+                     xlab = "Time (Days)",
+                     ylab = "Probability of Remaining Loan Balance",
+                     legend.title = "Quarter",
+                     legend.labs = c("2021 Q1 (14.7%)", 
+                                     "2021 Q2 (22.2%)", 
+                                     "2021 Q3 (16.4%)", 
+                                     "2021 Q4 (10.8%)", 
+                                     "2022 Q1 (8.29%)", 
+                                     "2022 Q2 (13.8%)", 
+                                     "2022 Q3 (13.7%)"),
+                     conf.int = TRUE,
+                     pval = TRUE,
+                     pval.coord = c(80, 0.575),
+                     pval.size = 12,
+                     legend = c(0.8, 0.8))
+
+# Print the plot to a pdf:
+image=ggpubr::ggpar(kmPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/borrowToFullRepayByQuarter.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+```
+
