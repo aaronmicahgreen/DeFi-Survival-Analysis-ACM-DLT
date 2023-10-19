@@ -1,0 +1,587 @@
+```{r}
+if (!require("ggplot2")) {
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dp)
+}
+if (!require("RColorBrewer")) {
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+if (!require("beeswarm")) {
+  install.packages("beeswarm")
+  library(beeswarm)
+}
+if (!require("tidyverse")) {
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if (!require("ggbeeswarm")) {
+  install.packages("ggbeeswarm")
+  library(ggbeeswarm)
+}
+if (!require("xts")) {
+  install.packages("xts")
+  library(xts)
+}
+if (!require("plotly")) {
+  install.packages("plotly")
+  library(plotly)
+}
+if(!require("lubridate")) {
+  install.packages("lubridate")
+  library(lubridate)
+}
+if(!require("survival")) {
+  install.packages("survival")
+  library(survival)
+}
+if(!require("survminer")) {
+  install.packages('survminer')
+  library(survminer)
+}
+if(!require("ranger")){
+  install.packages("ranger")
+  library(ranger)
+}
+if(!require("ggfortify")){
+  install.packages("ggfortify")
+  library(ggfortify)
+}
+if(!require("ggpubr")){
+  install.packages("ggpubr")
+  library(ggpubr)
+}
+if(!require("svglite")){
+  install.packages("svglite")
+  library(svglite)
+}
+if(!require("visreg")){
+  install.packages("visreg")
+  library(visreg)
+}
+if(!require("casebase")){
+  install.packages("casebase")
+  library(casebase)
+}
+if(!require("xtable")){
+  install.packages("xtable")
+  library(xtable)
+}
+pubFontSize = 18
+pValSize = 8
+pubWidth = 8
+pubHeight = 6
+pubColorScheme = "Set1"
+```
+
+```{r}
+dataPath <- "~/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/"
+mainnetPath <- paste0(dataPath, "V2/Mainnet/")
+transactionsFile <- "transactions.csv"
+mainnetTransactions <- read_csv(paste0(mainnetPath, transactionsFile))
+```
+
+```{r}
+# Prepare mainnet transactions for creating survival data:
+sampleProportion = 1
+set.seed(69420)
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+
+stableCoins <- read_csv("~/data/IDEA_DeFi_Research/Data/Coin Info/stablecoins.csv")
+
+coinStabilities <- mainnetTransactions %>%
+  select(reserve) %>%
+  distinct() %>%
+  mutate(coinType = case_when(reserve %in% stableCoins$reserve ~ "Stable",
+                              TRUE ~ "Non-Stable"))
+
+allTransactions <- mainnetTransactions %>%
+  left_join(coinStabilities, by = "reserve")
+
+allTransactions <- allTransactions %>%
+  mutate(datetime = as_datetime(timestamp),
+         quarter = floor_date(datetime, unit = "quarter")) %>%
+  group_by(type) %>%
+  mutate(amountUSDQuartile = ntile(amountUSD, n = 4),
+         principalUSDQuartile = ntile(principalAmountUSD, n = 4),
+         collateralUSDQuartile = ntile(collateralAmountUSD, n = 4)) %>%
+  group_by(reserve) %>%
+  mutate(amountQuartile = ntile(amount, n = 4)) %>%
+  ungroup() 
+
+users <- allTransactions %>%
+  select(user) %>%
+  distinct()
+
+sampledUsers <- users %>%
+  slice_sample(prop = sampleProportion)
+
+sampledTransactions <- allTransactions %>%
+  filter(user %in% sampledUsers$user)
+```
+#####
+# Create borrow-to-repay KM Curve and data table:
+#####
+```{r}
+#####
+# Create borrow-to-repay dataset with mainnet data:
+#####
+indexEvents = c("borrow")
+outcomeEvents = c("repay")
+joinFeatures = c("user", "reserve")
+obsPeriod = c(0, -1)
+indexCovs = c("Coin_Type" = "coinType")
+outcomeCovs = c()
+
+
+# We create the survival data below:
+survivalData <- createSurvData(indexEvents, 
+                               outcomeEvents, 
+                               data = sampledTransactions, 
+                               joinFeatures,
+                               observationPeriod = obsPeriod,
+                               indexCovariates = indexCovs,
+                               outcomeCovariates = outcomeCovs)
+
+
+strata = "Coin_Type"
+
+kmXLab = "Time (Days)"
+kmYLab = "Probability of No Repayments"
+kmLegendTitle = "Coin Type"
+kmLegendPosition = c(.8, .8)
+
+
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = paste0(survDataTable[[strata]], " (", format(round(survDataTable$Percentage, 2)), "%)")
+
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           "How Does Coin Type Affect Repayment Time?",
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/3.2_borrowToRepayCoinType.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+#####
+# Create borrow-to-liquidation KM curve and data table:
+#####
+```{r}
+indexEvents = c("borrow")
+outcomeEvents = c("liquidation")
+joinFeatures = c("user")
+obsPeriod = c(0, -1)
+indexCovs = c("Coin_Type" = "coinType")
+outcomeCovs = c()
+
+strata = "Coin_Type"
+
+kmXLab = "Time (Days)"
+kmYLab = "Probability of Not Being Liquidated"
+kmLegendTitle = "Coin Type"
+kmLegendPosition = c(.3, .3)
+
+
+# We create the survival data below:
+survivalData <- createSurvData(indexEvents, 
+                               outcomeEvents, 
+                               data = sampledTransactions, 
+                               joinFeatures,
+                               observationPeriod = obsPeriod,
+                               indexCovariates = indexCovs,
+                               outcomeCovariates = outcomeCovs)
+
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = paste0(survDataTable[[strata]], " (", format(round(survDataTable$Percentage, 2)), "%)")
+
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           "How Does Coin Type Affect Likelihood of Liquidation?",
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+
+# Print the plot to a pdf:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/3.2_borrowToLiquidationCoinType.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+  
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+
+```{r}
+#####
+# Create borrow-to-repay dataset with mainnet data:
+#####
+indexEvents = c("borrow")
+outcomeEvents = c("repay")
+joinFeatures = c("user", "reserve")
+obsPeriod = c(0, -1)
+indexCovs = c("USD_Amount_Quartile" = "amountUSDQuartile")
+outcomeCovs = c()
+
+
+# We create the survival data below:
+survivalData <- createSurvData(indexEvents, 
+                               outcomeEvents, 
+                               data = sampledTransactions, 
+                               joinFeatures,
+                               observationPeriod = obsPeriod,
+                               indexCovariates = indexCovs,
+                               outcomeCovariates = outcomeCovs)
+
+
+strata = "USD_Amount_Quartile"
+
+kmXLab = "Time (Days)"
+kmYLab = "Probability of No Repayments"
+kmLegendTitle = "Loan Size Percentile"
+kmLegendPosition = c(.8, .8)
+
+survivalData[[strata]] <- as.factor(survivalData[[strata]])
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = c("1-25%","26-50%", "51-75%", "76-100%")
+
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/3.2_borrowToRepayLoanAmount.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+
+```{r}
+indexEventSet = c("borrow")
+joinFeatures = c("user", "reserve")
+obsPeriod = c(0, -1)
+indexCovs = c("USD_Amount_Quartile" = "amountUSDQuartile", "Total_Borrowed" = "totalBorrowed", "Total_Borrowed_USD" = "totalBorrowedUSD")
+outcomeCovs = c("Total_Repaid" = "totalRepaid", "Total_Repaid_USD" = "totalRepaidUSD")
+
+
+cumulativeBorrows <- sampledTransactions %>%
+  filter(type == "borrow") %>%
+  filter(user == onBehalfOf) %>%
+  group_by(user, reserve) %>%
+  arrange(timestamp) %>%
+  mutate(totalBorrowed = cumsum(amount), totalBorrowedUSD = cumsum(amountUSD)) %>%
+  ungroup()
+
+cumulativeRepays <- sampledTransactions %>%
+  filter(type == "repay") %>%
+  filter(user == onBehalfOf) %>%
+  group_by(user, reserve) %>%
+  arrange(timestamp) %>%
+  mutate(totalRepaid = cumsum(amount), totalRepaidUSD = cumsum(amountUSD)) %>%
+  ungroup()
+  
+survivalData <- NULL
+  
+timeStart = min(sampledTransactions$timestamp)
+timeFinal = max(sampledTransactions$timestamp)
+
+
+indexEvents <- cumulativeBorrows %>%
+    filter(type %in% indexEventSet,
+           between(timestamp, timeStart, timeFinal)) %>%
+    select(where(not_all_na)) %>%
+    mutate(ID = row_number(),
+           indexTime = timestamp) %>%
+    select(ID, indexTime, joinFeatures, indexCovs)
+  
+outcomeEvents <- cumulativeRepays %>%
+    filter(type %in% outcomeEventSet,
+           between(timestamp, timeStart, timeFinal)) %>%
+    select(where(not_all_na)) %>%
+    mutate(outcomeTime = timestamp) %>%
+    select(outcomeTime, joinFeatures, outcomeCovs)
+
+uncensoredEvents <- left_join(indexEvents, outcomeEvents, by = joinFeatures) %>%
+  filter(outcomeTime > indexTime,
+         Total_Repaid >= Total_Borrowed) %>%
+  group_by(ID) %>%
+  slice_min(outcomeTime) %>%
+  distinct() %>%
+  summarize(ID,
+              timeDiff = outcomeTime - indexTime,
+              status = 1,
+              across(joinFeatures),
+              across(names(indexCovs)),
+              across(names(outcomeCovs)))
+
+rightCensoredEvents <- anti_join(indexEvents, uncensoredEvents, by = c("ID")) %>%
+    summarise(ID,
+              timeDiff = timeFinal - indexTime,
+              status = 0,
+              across(joinFeatures),
+              across(names(indexCovs))) %>%
+    distinct()
+
+survivalData <- bind_rows(uncensoredEvents, rightCensoredEvents)
+
+```
+```{r}
+strata = "USD_Amount_Quartile"
+
+kmXLab = "Time (Days)"
+kmYLab = "Probability of Remaining Loan Balance"
+kmLegendTitle = "Loan Size Percentile"
+kmLegendPosition = c(.8, .9)
+
+survivalData[[strata]] <- as.factor(survivalData[[strata]])
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = c("1-25%","26-50%", "51-75%", "76-100%")
+
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           "How Does Loan Size Affect the Length of Loans?",
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+survPlot
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/3.2_borrowToFullRepayLoanAmount.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+
+```{r}
+#####
+# Make borrow-to-liquidation dataset with mainnet data:
+#####
+liquidations <- sampledTransactions %>%
+  filter(type == "liquidation")
+
+numLiqPerUser <- liquidations %>%
+  group_by(user) %>%
+  summarise(numLiquidations = n())
+
+
+aggregateLiquidations <- sampledTransactions %>%
+  filter(user %in% numLiqPerUser$user) %>% # First, let's filter out all users who have never been liquidated.
+  group_by(user) %>%                       # The next set of logic is to sort users' transactions by timestamp and pull out all liquidations that are
+  arrange(timestamp) %>%                   # part of a consecutive set of liquidations.
+  mutate(nextTransaction = lead(type)) %>%
+  mutate(prevTransaction = lag(type)) %>%
+  filter(type == "liquidation" & (nextTransaction == "liquidation" | prevTransaction == "liquidation"))  %>%
+  mutate(liquidationDay = floor_date(as_datetime(timestamp), unit = "day")) %>% # Then we want to use some approximation for the timeframe of this liquidation event, so we naively group consecutive liquidations by the day on which they took place.
+  group_by(user,liquidationDay) %>% # Doing this means that we can group by user and liquidationDay, which is functionally grouping by "liquidation event"
+  mutate(liquidationDuration = max(timestamp) - min(timestamp)) %>% # Now we can compute some basic stats about the event.
+  mutate(liquidationStart = min(timestamp), liquidationEnd = max(timestamp)) %>%
+  mutate(liquidationStartDatetime = as_datetime(liquidationStart), liquidationEndDatetime = as_datetime(liquidationEnd)) %>%
+  mutate(collateralType = case_when(collateralReserve %in% stableCoins$reserve ~ "Stable",
+                              TRUE ~ "Non-Stable")) %>%
+  mutate(principalType = case_when(principalReserve %in% stableCoins$reserve ~ "Stable",
+                              TRUE ~ "Non-Stable")) %>%
+  mutate(totalCollateralUSD = sum(collateralAmountUSD), totalPrincipalUSD = sum(principalAmountUSD))%>%
+  mutate(numLiquidations = n()) %>%
+  summarise(user, userAlias, numLiquidations, quarter, liquidationDuration, liquidationStart, liquidationEnd, liquidationStartDatetime, liquidationEndDatetime,
+            collateralReserves = str_flatten(str_sort(unique(collateralReserve)), collapse = ","), 
+            collateralTypes = str_flatten(str_sort(unique(collateralType)), collapse= ","),
+            principalReserves = str_flatten(str_sort(unique(principalReserve)), collapse = ","),
+            principalTypes = str_flatten(str_sort(unique(principalType)), collapse = ","),
+            totalCollateralUSD, totalPrincipalUSD, liquidationType = str_c(principalTypes, collateralTypes, sep = ":"),
+            principalAmountUSD = totalPrincipalUSD, collateralAmountUSD = totalCollateralUSD) %>%
+  distinct() %>%
+  ungroup() 
+# We create the survival data below:
+survivalData <- NULL
+# For right-censored events, the final transaction in the data frame will be the end observation:
+timeFinal = max(sampledTransactions$timestamp)
+
+
+# Use the borrows from our sampled transactions as our index events:
+indexEvents <- sampledTransactions %>%
+  filter(type == "borrow") %>%
+  mutate(ID = row_number(),
+         indexTime = timestamp) %>%
+  select(ID,
+         indexTime, 
+         user,
+         reserve,
+         coinType)
+
+# Use aggregate liquidations as our outcome events:
+outcomeEvents <- aggregateLiquidations %>%
+  mutate(outcomeTime = liquidationStart,
+         liquidationID = row_number()) %>%
+  select(outcomeTime,
+         user,
+         liquidationID,
+         principalTypes,
+         collateralTypes)
+
+
+# For uncensored events, we summarise using features from the index event when necessary and 
+# calculate the time-to-outcome as the outcome event time minus the index event time:
+uncensoredEvents <- left_join(indexEvents, outcomeEvents, by = c("user")) %>%
+  filter(outcomeTime > indexTime) %>%
+  group_by(ID) %>%
+  slice_min(outcomeTime) %>%
+  summarise(user, 
+            timeDiff = min(outcomeTime) - indexTime, 
+            status = 1,
+            coinType,
+            collateralTypes,  
+            liquidationID) %>%
+  distinct()
+
+# For right-censored events, we summarise using features from the index event and calculate the 
+  # time-to-censorship using the timeFinal from above and the index time:
+  rightCensoredEvents <- anti_join(indexEvents, uncensoredEvents, by = c("ID")) %>%
+    summarise(ID,
+              timeDiff = timeFinal - indexTime,
+              status = 0,
+              coinType) %>%
+    distinct()
+
+
+
+
+survivalData <- bind_rows(rightCensoredEvents, uncensoredEvents) %>%
+  mutate(indexToOutcomeType = if_else(!is.na(collateralTypes), paste(coinType, collateralTypes, sep=":"), "NA"))
+
+liquidationTypes <- survivalData %>%
+  group_by(indexToOutcomeType) %>%
+  select(liquidationID) %>%
+  distinct() %>%
+  filter(indexToOutcomeType != "NA") %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  mutate(totalCount = sum(count),
+         percentCount = count / totalCount)
+
+survivalData <- survivalData %>%
+  filter(indexToOutcomeType %in% liquidationTypes$indexToOutcomeType)
+
+```
+
+```{r}
+#####
+# Make plot for borrow-to-liquidation
+#####
+fit <- surv_fit(Surv(timeDiff/86400, status) ~ indexToOutcomeType, data = survivalData)
+kmPlot <- ggsurvplot(fit,
+                     censor = FALSE,
+                     title = "How Do Principal and Collateral Type Combinations Affect Riskiness of Loans?",
+                     xlab = "Time (Days)",
+                     ylab = "Probability of No Liquidation",
+                     legend.title = "Principal:Collateral",
+                     conf.int = TRUE,
+                     legend.labs = c("Non-Stable: Non-Stable (19.8%)",
+                                     "Non-Stable: Mixed (0.2%)",
+                                     "Non-Stable: Stable (1.0%)",
+                                     "Stable: Non-Stable (77.8%)",
+                                     "Stable: Mixed (0.2%)",
+                                     "Stable: Stable (1.0%)"),
+                     pval = TRUE,
+                     pval.coord = c(435, 0.575),
+                     legend = c(0.7, 0.8))
+
+# Print the plot to a pdf:
+image=ggpubr::ggpar(kmPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/borrowToLiquidationType.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+
+survDataTable <- createSurvDataTable(survivalData, strata)
+```
+
+```{r}
+survivalData$indexToOutcomeType <- as.factor(survivalData$indexToOutcomeType)
+levels(survivalData$indexToOutcomeType)
+
+survivalData$indexToOutcomeType <- fct_relevel(survivalData$indexToOutcomeType, "Stable:Stable", "Stable:Non-Stable", "Non-Stable:Stable", "Non-Stable:Non-Stable", "Stable:Non-Stable,Stable", "Non-Stable:Non-Stable,Stable")
+
+coxFit <- coxph(Surv(timeDiff/86400, status) ~ as.factor(indexToOutcomeType), data = survivalData)
+coxFit
+summary(coxFit)
+```
+

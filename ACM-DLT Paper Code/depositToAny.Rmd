@@ -1,0 +1,62 @@
+```{r}
+indexEventSet = c("deposit")
+outcomeEventSet = c("redeem", "repay", "borrow", "deposit", "liquidation")
+indexCovs = c("Coin_Type" = "coinType")
+outcomeCovs = c("Outcome_Type" = "type")
+observationPeriod = c(0, -1)
+joinFeatures = c("user")
+
+strata = "Outcome_Type"
+
+kmTitle = "How Quickly Do Users Make Transactions After a Deposit?"
+kmXLab = "Time (Days)"
+kmYLab = "Probability of No Other Transaction"
+kmLegendTitle = "Outcome Type"
+kmLegendPosition = c(.8, .8)
+
+survivalData <-createSurvData(indexEventSet,
+                              outcomeEventSet,
+                              data = sampledTransactions,
+                              joinFeatures,
+                              indexCovariates = indexCovs,
+                              outcomeCovariates = outcomeCovs) %>%
+  filter(!is.na(ID))
+
+
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = paste0(survDataTable[[strata]], " (", format(round(survDataTable$Percentage, 2)), "%)")
+
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           kmTitle,
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+ggsave(file="./Images/3.1_depositToAny.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+
+```{r}
+depositsWithNoOutcomes <- survivalData %>%
+  filter(is.na(Outcome_Type))
+```
