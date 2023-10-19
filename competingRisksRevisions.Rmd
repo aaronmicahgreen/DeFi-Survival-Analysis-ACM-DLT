@@ -9,6 +9,8 @@ library(tidycmprsk)
 library(tidyr)
 library(ggsurvfit)
 library(cmprsk)
+library(readr)
+library(data.table)
 ```
 
 ```{r}
@@ -36,44 +38,7 @@ rename <- dplyr::rename
 
 ```
 
-```{r}
-# For this notebook, we just need to recreate a few of our analyses with competing risks. 
 
-# First, lets recreate figure 2, which is the figure showing the likelihood of each event type being the next event after a deposit.
-
-indexEventSet <- c("deposit")
-outcomeEventSet <- c("withdraw", "borrow", "repay", "liquidation")
-subjects <- c("user")
-indexCovariates <- c()
-outcomeCovariates <- c("type")
-observationPeriod <- c(0, tFinal)
-
-depositToAll <- createSurvData(indexEventSet, 
-                               outcomeEventSet, 
-                               transactions, 
-                               subjects, 
-                               observationPeriod, 
-                               indexCovariates, 
-                               outcomeCovariates)
-
-depositToAll <- depositToAll %>%
-  mutate(endpoint = as_factor(case_when(status == 0 ~ "censor",
-                           TRUE ~ type))) %>%
-  filter(timeDiff != 0) %>%
-  mutate(istate = "deposit") %>%
-  dplyr::select(id = indexID,
-         time = timeDiff,
-         endpoint,
-         istate)
-
-smallSet <- depositToAll %>%
-  slice_sample(prop = 0.05)
-
-
-fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id, istate=istate)
-
-plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
-```
 
 ```{r}
 indexEventSet <- c("borrow")
@@ -92,7 +57,7 @@ borrowToOutcome <- createSurvData(indexEventSet, outcomeEventSet, transactions, 
 
 
 borrowToOutcome <- borrowToOutcome %>%
-  mutate(endpoint = as_factor(case_when(status == 0 ~ "censor",
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
                            TRUE ~ type))) %>%
   filter(timeDiff != 0) %>%
   mutate(istate = "borrow") %>%
@@ -103,193 +68,265 @@ borrowToOutcome <- borrowToOutcome %>%
          coinType)
 
 smallSet <- borrowToOutcome %>%
-  slice_sample(prop = 0.05)
-
-
-fit <- survfit(formula = Surv(time/86400, endpoint) ~ 1, data = smallSet, id=id, istate=istate)
-plot(fit, col=1:4, lty=1:5, lwd=2, ylab="Probability in state")
-```
-
-```{r}
-smallSet <- smallSet %>%
-  mutate(cause = as.numeric(endpoint)) %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
   drop_na()
 
-tidycmprsk::crr(Surv(time/86400, endpoint) ~ coinType, data = smallSet)
+competingRisks <- tidycmprsk::crr(Surv(time, endpoint) ~ coinType, data = smallSet)
+competingRisks
 
-tidycmprsk::cuminc(Surv(time/86400, endpoint) ~ coinType, data = smallSet) %>% 
-  ggcuminc() + 
+cumulativeIncFunction <- tidycmprsk::cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) 
+
+plot <- cumulativeIncFunction %>% 
+  ggcuminc(outcome = c("repay", "liquidation")) + 
   labs(x = "Days") + 
   add_confidence_interval() + 
-  ggtitle(label = "How Does Coin Type Affect Repayment time? - Cumulative Incidence Function")
+  scale_y_reverse() +
+  ggtitle(label = "How Does Coin Type Affect Repayment time?")
 
-
-
-# group <- rep(1, nrow(smallSet))
-# fit <- cuminc(smallSet$time, smallSet$cause, group, strata = smallSet$coinType, cencode = 1)
-# plot(fit, main = 'cmprsk', xlab = 'Days')
-# summary(fit)
-# 
-# 
-# test <- comp.risk(Event(time/86400, cause, cens.code=1) ~ coinType,
-#                   data=smallSet,
-#                   cause=3,
-#                   resample.iid=1,
-#                   n.sim=5000,
-#                   model="prop")
-# summary(test)
-# pout1 <- predict(test, X = 2)
-# pout1 <- predict(test, X = 3)
-# plot(pout1, xlim = c(0, 570), xlab = 'Days', main = 'timereg', uniform = 0, se = 0)
-```
-
-
-## Sample Code for Comp.Risk function:
-
-```{r}
-data(bmt)
-clust <- rep(1:204,each=2)
-addclust<-comp.risk(Event(time,cause)~platelet+age+tcell+survival::cluster(clust),
-                    data=bmt,
-                    cause=1,
-                    resample.iid=1,
-                    n.sim=100,
-                    model="additive")
-###
-addclust<-comp.risk(Event(time,cause)~+1+survival::cluster(clust),
-                    data=bmt,
-                    cause=1,
-                    resample.iid=1,
-                    n.sim=100,
-                    model="additive")
-
-pad <- predict(addclust,X=1)
-plot(pad)
-```
-
-
-```{r}
-add<-comp.risk(Event(time,cause)~platelet+age+tcell,
-               data=bmt,
-               cause=1,
-               resample.iid=1,
-               n.sim=100,
-               model="additive")
-summary(add)
-par(mfrow=c(2,4))
-plot(add)
-### plot(add,score=1) ### to plot score functions for test
+plot
 ```
 
 ```{r}
-ndata<-data.frame(platelet=c(1,0,0),age=c(0,1,0),tcell=c(0,0,1))
-par(mfrow=c(2,3))
-out<-predict(add,ndata,uniform=1,n.sim=100)
-par(mfrow=c(2,2))
-plot(out,multiple=0,uniform=1,col=1:3,lty=1,se=1)
+borrowToOutcome <- createSurvData(indexEventSet, outcomeEventSet, transactions, subjects, observationPeriod, indexCovariates, outcomeCovariates)
+
+t0 <- date(as_datetime(min(borrowToOutcome$indexTime, na.rm = TRUE)))
+tFinal <- date(as_datetime(max(borrowToOutcome$outcomeTime, na.rm = TRUE)))
+minQuarter <- round_date(t0, unit = "quarter")
+maxQuarter <- round_date(tFinal, unit = "quarter")
+    
+quarters <- c(minQuarter)
+currentQuarter <- ceiling_date(minQuarter+1, unit="quarter")
+while(currentQuarter < maxQuarter){
+  quarters <- c(quarters, currentQuarter)
+  currentQuarter <- ceiling_date(currentQuarter+1, unit = "quarter")
+}
+#####
+# I can't think of a good way to do this without looping.
+# Loop through the quarters we need to include and compute the various 
+# events observed.
+#####
+quarterlySurvivalData <- NULL
+oneQuarterSurvivalData <- NULL
+
+for(quarter in quarters){
+  oneQuarterSurvivalData <- NULL
+  observationPeriod = c(as_datetime(quarter), ceiling_date(as_datetime(quarter+1), unit = "quarter"))
+  
+  # Four cases:
+  #   (1) Neither the index event nor the outcome event occurred during the observation period,
+  #       and they both occurred either before the observation period started or after the 
+  #       observation period ended.
+  #           In this case, we should just filter out these events and do the rest of the work
+  #           with just the relevant events.
+  
+  relevantEvents <- borrowToOutcome %>%
+    filter((indexTime <= observationPeriod[2] & indexTime > observationPeriod[1]) 
+           | (outcomeTime >= observationPeriod[1] & outcomeTime < observationPeriod[2]))
+  
+  #   (2) The index event occurred before the observation period began and the
+  #       outcome even occurred after the observation period ended.
+  #           In this case, the timeDiff value will be the entire length of the
+  #           observation period.
+  
+  fullPeriodEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime > observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  
+  #   (3) The index event occurred before the observation period started and the outcome
+  #       event occurred during the observation period.
+  #           In this case, we treat the events like they are left-censored. We compute 
+  #           timeDiff as outcomeTime - observationPeriod[1]
+  
+  leftCensoredEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime >= observationPeriod[1]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  #   (4) The index event occurred during the observation period and the outcome 
+  #       event occurred after the observation period ended.
+  #           In this case, we treat the events like they are right-censored. We compute
+  #           timeDiff as observationPeriod[2] - indexTime.
+  rightCensoredEvents <- relevantEvents %>%
+    filter(outcomeTime > observationPeriod[2] & indexTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], as_datetime(indexTime))) %>%
+    mutate(status = 0)
+  
+  #   (5) Both the index and outcome events occurred during the observation period.
+  #       These are uncensored events and their timeDiff can remain unchanged.
+  uncensoredEvents <- relevantEvents %>%
+    filter(indexTime >= observationPeriod[1] & outcomeTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), as_datetime(indexTime))) %>%
+    mutate(status = 1)
+  
+  # Finally, we just need to combine these three datasets into one:
+  oneQuarterSurvivalData <- bind_rows(fullPeriodEvents, leftCensoredEvents, rightCensoredEvents, uncensoredEvents) %>%
+    mutate(timeDiff = as.double(timeDiff)) %>%
+    mutate(quarter = paste0(year(as_datetime(as.numeric(quarter))), " Q", quarter(as_datetime(as.numeric(quarter)))))
+  quarterlySurvivalData <- bind_rows(quarterlySurvivalData, oneQuarterSurvivalData)
+}
+
+borrowToOutcomeQuarterly <- quarterlySurvivalData %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "borrow") %>%
+  dplyr::select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate,
+         quarter)
 ```
 
 ```{r}
-## fits additive model with some constant effects
-add.sem<-comp.risk(Event(time,cause)~const(platelet)+const(age)+const(tcell),
-                   data=bmt,
-                   cause=1,
-                   resample.iid=1,
-                   n.sim=100,
-                   model="additive")
-summary(add.sem)
-out<-predict(add.sem,ndata,uniform=1,n.sim=100)
-par(mfrow=c(2,2))
-plot(out,multiple=0,uniform=1,col=1:3,lty=1,se=0)
+smallSet2 <- borrowToOutcomeQuarterly %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
+  filter(quarter != "2020 Q4") %>% 
+  drop_na()
+
+competingRisks2 <- tidycmprsk::crr(Surv(time/86400, endpoint) ~ quarter, data = smallSet2)
+competingRisks2
+
+cumulativeIncFunction2 <- tidycmprsk::cuminc(Surv(time, endpoint) ~ quarter, data = smallSet2)
+
+plot2 <- cumulativeIncFunction2 %>% 
+  ggcuminc(outcome = c("repay", "liquidation")) + 
+  labs(x = "Days") + 
+  add_confidence_interval() + 
+  scale_y_reverse() +
+  ggtitle(label = "How Does Loan Repayment Time Change Across Quarters?")
+
+plot2
+```
+
+
+```{r}
+indexEventSet <- c("deposit")
+outcomeEventSet <- c("withdraw", "liquidation")
+subjects <- c("user")
+indexCovariates <- c()
+outcomeCovariates <- c("type")
+observationPeriod <- c(0, tFinal)
+
+depositToOutcome <- createSurvData(indexEventSet, 
+                               outcomeEventSet, 
+                               transactions, 
+                               subjects, 
+                               observationPeriod, 
+                               indexCovariates, 
+                               outcomeCovariates)
+
+t0 <- date(as_datetime(min(depositToOutcome$indexTime, na.rm = TRUE)))
+tFinal <- date(as_datetime(max(depositToOutcome$outcomeTime, na.rm = TRUE)))
+minQuarter <- round_date(t0, unit = "quarter")
+maxQuarter <- round_date(tFinal, unit = "quarter")
+    
+quarters <- c(minQuarter)
+currentQuarter <- ceiling_date(minQuarter+1, unit="quarter")
+while(currentQuarter < maxQuarter){
+  quarters <- c(quarters, currentQuarter)
+  currentQuarter <- ceiling_date(currentQuarter+1, unit = "quarter")
+}
+#####
+# I can't think of a good way to do this without looping.
+# Loop through the quarters we need to include and compute the various 
+# events observed.
+#####
+quarterlySurvivalData <- NULL
+oneQuarterSurvivalData <- NULL
+
+for(quarter in quarters){
+  oneQuarterSurvivalData <- NULL
+  observationPeriod = c(as_datetime(quarter), ceiling_date(as_datetime(quarter+1), unit = "quarter"))
+  
+  # Four cases:
+  #   (1) Neither the index event nor the outcome event occurred during the observation period,
+  #       and they both occurred either before the observation period started or after the 
+  #       observation period ended.
+  #           In this case, we should just filter out these events and do the rest of the work
+  #           with just the relevant events.
+  
+  relevantEvents <- depositToOutcome %>%
+    filter((indexTime <= observationPeriod[2] & indexTime > observationPeriod[1]) 
+           | (outcomeTime >= observationPeriod[1] & outcomeTime < observationPeriod[2]))
+  
+  #   (2) The index event occurred before the observation period began and the
+  #       outcome even occurred after the observation period ended.
+  #           In this case, the timeDiff value will be the entire length of the
+  #           observation period.
+  
+  fullPeriodEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime > observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  
+  #   (3) The index event occurred before the observation period started and the outcome
+  #       event occurred during the observation period.
+  #           In this case, we treat the events like they are left-censored. We compute 
+  #           timeDiff as outcomeTime - observationPeriod[1]
+  
+  leftCensoredEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime >= observationPeriod[1]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  #   (4) The index event occurred during the observation period and the outcome 
+  #       event occurred after the observation period ended.
+  #           In this case, we treat the events like they are right-censored. We compute
+  #           timeDiff as observationPeriod[2] - indexTime.
+  rightCensoredEvents <- relevantEvents %>%
+    filter(outcomeTime > observationPeriod[2] & indexTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], as_datetime(indexTime))) %>%
+    mutate(status = 0)
+  
+  #   (5) Both the index and outcome events occurred during the observation period.
+  #       These are uncensored events and their timeDiff can remain unchanged.
+  uncensoredEvents <- relevantEvents %>%
+    filter(indexTime >= observationPeriod[1] & outcomeTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), as_datetime(indexTime))) %>%
+    mutate(status = 1)
+  
+  # Finally, we just need to combine these three datasets into one:
+  oneQuarterSurvivalData <- bind_rows(fullPeriodEvents, leftCensoredEvents, rightCensoredEvents, uncensoredEvents) %>%
+    mutate(timeDiff = as.double(timeDiff)) %>%
+    mutate(quarter = paste0(year(as_datetime(as.numeric(quarter))), " Q", quarter(as_datetime(as.numeric(quarter)))))
+  quarterlySurvivalData <- bind_rows(quarterlySurvivalData, oneQuarterSurvivalData)
+}
+
+depositToOutcomeQuarterly <- quarterlySurvivalData %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "deposit") %>%
+  dplyr::select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate,
+         quarter)
 ```
 
 ```{r}
-## Fine & Gray model
-fg<-comp.risk(Event(time,cause)~const(platelet)+const(age)+const(tcell),
-              data=bmt,
-              cause=1,
-              resample.iid=1,
-              model="fg",
-              n.sim=100)
-summary(fg)
-out<-predict(fg,ndata,uniform=1,n.sim=100)
-par(mfrow=c(2,2))
-plot(out,multiple=1,uniform=0,col=1:3,lty=1,se=0)
-```
+smallSet3 <- depositToOutcomeQuarterly %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
+  filter(quarter != "2020 Q4") %>% 
+  drop_na()
 
-```{r}
-## extended model with time-varying effects
-fg.npar<-comp.risk(Event(time,cause)~platelet+age+const(tcell),
-                   data=bmt,
-                   cause=1,
-                   resample.iid=1,
-                   model="prop",
-                   n.sim=100)
-summary(fg.npar);
-out<-predict(fg.npar,ndata,uniform=1,n.sim=100)
-head(out$P1[,1:5]); head(out$se.P1[,1:5])
-par(mfrow=c(2,2))
-plot(out,multiple=1,uniform=0,col=1:3,lty=1,se=0)
-```
+competingRisks3 <- tidycmprsk::crr(Surv(time, endpoint) ~ quarter, data = smallSet3)
+competingRisks3 
 
-```{r}
-## Fine & Gray model with alternative parametrization for baseline
-fg2<-comp.risk(Event(time,cause)~const(platelet)+const(age)+const(tcell),
-               data=bmt,
-               cause=1,
-               resample.iid=1,
-               model="prop",
-               n.sim=100)
-summary(fg2)
-```
+cumulativeIncFunction3 <- tidycmprsk::cuminc(Surv(time, endpoint) ~ quarter, data = smallSet3) 
 
-```{r}
-#################################################################
-## Delayed entry models,
-#################################################################
-nn <- nrow(bmt)
-entrytime <- rbinom(nn,1,0.5)*(bmt$time*runif(nn))
-bmt$entrytime <- entrytime
-times <- seq(5,70,by=1)
-bmtw <- prep.comp.risk(bmt,
-                       times=times,
-                       time="time",
-                       entrytime="entrytime",
-                       cause="cause")
-## non-parametric model
-outnp <- comp.risk(Event(time,cause)~tcell+platelet+const(age),
-                   data=bmtw,
-                   cause=1,
-                   fix.gamma=1,
-                   gamma=0,
-                   cens.weights=bmtw$cw,
-                   weights=bmtw$weights,
-                   times=times,
-                   n.sim=0)
-par(mfrow=c(2,2))
-plot(outnp)
-```
+plot3 <- cumulativeIncFunction3 %>% 
+  ggcuminc(outcome = c("withdraw", "liquidation")) + 
+  labs(x = "Days") + 
+  add_confidence_interval() + 
+  scale_y_reverse() +
+  ggtitle(label = "How Likely are Users to Keep Accounts open in Each Quarter?")
 
-```{r}
-outnp <- comp.risk(Event(time,cause)~tcell+platelet,
-                   data=bmtw,
-                   cause=1,
-                   cens.weights=bmtw$cw,
-                   weights=bmtw$weights,
-                   times=times,
-                   n.sim=0)
-par(mfrow=c(2,2))
-plot(outnp)
-```
-
-```{r}
-## semiparametric model
-out <- comp.risk(Event(time,cause)~const(tcell)+const(platelet),
-                 data=bmtw,
-                 cause=1,
-                 cens.weights=bmtw$cw,
-                 weights=bmtw$weights,
-                 times=times,
-                 n.sim=0)
-summary(out)
+plot3
 ```
