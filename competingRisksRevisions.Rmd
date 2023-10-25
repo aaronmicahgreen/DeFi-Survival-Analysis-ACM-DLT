@@ -4,7 +4,6 @@ library(survival)
 library(survminer)
 library(ggplot2)
 library(dplyr)
-library(timereg)
 library(tidycmprsk)
 library(tidyr)
 library(ggsurvfit)
@@ -187,7 +186,7 @@ smallSet2 <- borrowToOutcomeQuarterly %>%
   filter(quarter != "2020 Q4") %>% 
   drop_na()
 
-competingRisks2 <- tidycmprsk::crr(Surv(time/86400, endpoint) ~ quarter, data = smallSet2)
+competingRisks2 <- tidycmprsk::crr(Surv(time, endpoint) ~ quarter, data = smallSet2)
 competingRisks2
 
 cumulativeIncFunction2 <- tidycmprsk::cuminc(Surv(time, endpoint) ~ quarter, data = smallSet2)
@@ -330,3 +329,20 @@ plot3 <- cumulativeIncFunction3 %>%
 
 plot3
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
