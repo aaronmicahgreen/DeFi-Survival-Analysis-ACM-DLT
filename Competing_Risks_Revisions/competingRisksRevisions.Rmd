@@ -1,0 +1,372 @@
+```{r}
+library(lubridate)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(dplyr)
+library(tidycmprsk)
+library(tidyr)
+library(ggsurvfit)
+library(cmprsk)
+library(readr)
+library(data.table)
+library(ggpubr)
+```
+
+```{r}
+# Standardize values for publication font sizes and color schemes.
+pubFontSize = 18
+pValSize = 8
+pubWidth = 8
+pubHeight = 6
+pubColorScheme = "Set1"
+```
+
+```{r}
+# Load the AaveV2 Ethereum transaction data and filter out transactions after October 1, 2022 since 
+# this is the data we used in the original paper
+
+transactions <- read_rds("/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/V2/Mainnet/transactions.rds")
+coinTypes <- read_csv("/data/IDEA_DeFi_Research/Data/Coin_Info/stablecoins.csv")
+# Run the files to make the functions that create the survival data:
+source("../Survival_Data_Creation/createSurvData.R")
+
+tFinal <- as_datetime(ymd("2022-10-01"))
+
+transactions <- transactions %>%
+  filter(timestamp <= tFinal) %>%
+  mutate(coinType = case_when(reserve %in% coinTypes$symbol ~ "Stable",
+                              TRUE ~ "Non-Stable"))
+
+## Helper functions
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+select <- dplyr::select
+mutate <- dplyr::mutate
+rename <- dplyr::rename
+
+```
+
+
+
+```{r}
+indexEventSet <- c("borrow")
+outcomeEventSet <- c("repay", "liquidation")
+transactions <- transactions %>%
+  mutate(reserve = case_when(type == "liquidation" ~ principalReserve,
+                             TRUE ~ reserve)) %>%
+  mutate()
+subjects <- c("user",
+              "reserve")
+indexCovariates <- c("coinType")
+outcomeCovariates <- c("type")
+observationPeriod <- c(0, tFinal)
+  
+borrowToOutcome <- createSurvData(indexEventSet, outcomeEventSet, transactions, subjects, observationPeriod, indexCovariates, outcomeCovariates)
+
+
+borrowToOutcome <- borrowToOutcome %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "borrow") %>%
+  select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate,
+         coinType)
+
+smallSet <- borrowToOutcome %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
+  drop_na()
+
+competingRisks <- tidycmprsk::crr(Surv(time, endpoint) ~ coinType, data = smallSet)
+competingRisks
+
+cumulativeIncFunction <- tidycmprsk::cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) 
+
+plot <- cumulativeIncFunction %>% 
+  ggcuminc(outcome = c("repay", "liquidation")) + 
+  labs(x = "Days") + 
+  add_confidence_interval() + 
+  ggtitle(label = "How Does Coin Type Affect Repayment time?") + 
+  scale_x_continuous(breaks = seq(0, 650, by = 100)) + 
+  theme(legend.position = c(.8, .5))
+
+plot
+
+# Print the plot to a pdf:
+image=ggpubr::ggpar(plot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              font.title = list(size = pubFontSize),
+              palette = pubColorScheme)
+
+image
+
+ggsave(file="./Competing_Risks_Figures/borrowToRepayCoinType.pdf", plot=image, width=pubWidth, height=pubHeight)
+```
+
+```{r}
+borrowToOutcome <- createSurvData(indexEventSet, outcomeEventSet, transactions, subjects, observationPeriod, indexCovariates, outcomeCovariates)
+
+t0 <- date(as_datetime(min(borrowToOutcome$indexTime, na.rm = TRUE)))
+tFinal <- date(as_datetime(max(borrowToOutcome$outcomeTime, na.rm = TRUE)))
+minQuarter <- round_date(t0, unit = "quarter")
+maxQuarter <- round_date(tFinal, unit = "quarter")
+    
+quarters <- c(minQuarter)
+currentQuarter <- ceiling_date(minQuarter+1, unit="quarter")
+while(currentQuarter < maxQuarter){
+  quarters <- c(quarters, currentQuarter)
+  currentQuarter <- ceiling_date(currentQuarter+1, unit = "quarter")
+}
+#####
+# I can't think of a good way to do this without looping.
+# Loop through the quarters we need to include and compute the various 
+# events observed.
+#####
+quarterlySurvivalData <- NULL
+oneQuarterSurvivalData <- NULL
+
+for(quarter in quarters){
+  oneQuarterSurvivalData <- NULL
+  observationPeriod = c(as_datetime(quarter), ceiling_date(as_datetime(quarter+1), unit = "quarter"))
+  
+  # Four cases:
+  #   (1) Neither the index event nor the outcome event occurred during the observation period,
+  #       and they both occurred either before the observation period started or after the 
+  #       observation period ended.
+  #           In this case, we should just filter out these events and do the rest of the work
+  #           with just the relevant events.
+  
+  relevantEvents <- borrowToOutcome %>%
+    filter((indexTime <= observationPeriod[2] & indexTime > observationPeriod[1]) 
+           | (outcomeTime >= observationPeriod[1] & outcomeTime < observationPeriod[2]))
+  
+  #   (2) The index event occurred before the observation period began and the
+  #       outcome even occurred after the observation period ended.
+  #           In this case, the timeDiff value will be the entire length of the
+  #           observation period.
+  
+  fullPeriodEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime > observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  
+  #   (3) The index event occurred before the observation period started and the outcome
+  #       event occurred during the observation period.
+  #           In this case, we treat the events like they are left-censored. We compute 
+  #           timeDiff as outcomeTime - observationPeriod[1]
+  
+  leftCensoredEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime >= observationPeriod[1]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  #   (4) The index event occurred during the observation period and the outcome 
+  #       event occurred after the observation period ended.
+  #           In this case, we treat the events like they are right-censored. We compute
+  #           timeDiff as observationPeriod[2] - indexTime.
+  rightCensoredEvents <- relevantEvents %>%
+    filter(outcomeTime > observationPeriod[2] & indexTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], as_datetime(indexTime))) %>%
+    mutate(status = 0)
+  
+  #   (5) Both the index and outcome events occurred during the observation period.
+  #       These are uncensored events and their timeDiff can remain unchanged.
+  uncensoredEvents <- relevantEvents %>%
+    filter(indexTime >= observationPeriod[1] & outcomeTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), as_datetime(indexTime))) %>%
+    mutate(status = 1)
+  
+  # Finally, we just need to combine these three datasets into one:
+  oneQuarterSurvivalData <- bind_rows(fullPeriodEvents, leftCensoredEvents, rightCensoredEvents, uncensoredEvents) %>%
+    mutate(timeDiff = as.double(timeDiff)) %>%
+    mutate(quarter = paste0(year(as_datetime(as.numeric(quarter))), " Q", quarter(as_datetime(as.numeric(quarter)))))
+  quarterlySurvivalData <- bind_rows(quarterlySurvivalData, oneQuarterSurvivalData)
+}
+
+borrowToOutcomeQuarterly <- quarterlySurvivalData %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "borrow") %>%
+  dplyr::select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate,
+         quarter)
+```
+
+```{r}
+smallSet2 <- borrowToOutcomeQuarterly %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
+  filter(quarter != "2020 Q4") %>% 
+  drop_na()
+
+competingRisks2 <- tidycmprsk::crr(Surv(time, endpoint) ~ quarter, data = smallSet2)
+competingRisks2
+
+cumulativeIncFunction2 <- tidycmprsk::cuminc(Surv(time, endpoint) ~ quarter, data = smallSet2)
+
+plot2 <- cumulativeIncFunction2 %>% 
+  ggcuminc(outcome = c("repay", "liquidation")) + 
+  labs(x = "Days") + 
+  add_confidence_interval() +
+  ggtitle(label = "How Does Loan Repayment Time Change Across Quarters?")
+
+plot2
+```
+
+
+```{r}
+indexEventSet <- c("deposit")
+outcomeEventSet <- c("withdraw", "liquidation")
+subjects <- c("user")
+indexCovariates <- c()
+outcomeCovariates <- c("type")
+observationPeriod <- c(0, tFinal)
+
+depositToOutcome <- createSurvData(indexEventSet, 
+                               outcomeEventSet, 
+                               transactions, 
+                               subjects, 
+                               observationPeriod, 
+                               indexCovariates, 
+                               outcomeCovariates)
+
+t0 <- date(as_datetime(min(depositToOutcome$indexTime, na.rm = TRUE)))
+tFinal <- date(as_datetime(max(depositToOutcome$outcomeTime, na.rm = TRUE)))
+minQuarter <- round_date(t0, unit = "quarter")
+maxQuarter <- round_date(tFinal, unit = "quarter")
+    
+quarters <- c(minQuarter)
+currentQuarter <- ceiling_date(minQuarter+1, unit="quarter")
+while(currentQuarter < maxQuarter){
+  quarters <- c(quarters, currentQuarter)
+  currentQuarter <- ceiling_date(currentQuarter+1, unit = "quarter")
+}
+#####
+# I can't think of a good way to do this without looping.
+# Loop through the quarters we need to include and compute the various 
+# events observed.
+#####
+quarterlySurvivalData <- NULL
+oneQuarterSurvivalData <- NULL
+
+for(quarter in quarters){
+  oneQuarterSurvivalData <- NULL
+  observationPeriod = c(as_datetime(quarter), ceiling_date(as_datetime(quarter+1), unit = "quarter"))
+  
+  # Four cases:
+  #   (1) Neither the index event nor the outcome event occurred during the observation period,
+  #       and they both occurred either before the observation period started or after the 
+  #       observation period ended.
+  #           In this case, we should just filter out these events and do the rest of the work
+  #           with just the relevant events.
+  
+  relevantEvents <- depositToOutcome %>%
+    filter((indexTime <= observationPeriod[2] & indexTime > observationPeriod[1]) 
+           | (outcomeTime >= observationPeriod[1] & outcomeTime < observationPeriod[2]))
+  
+  #   (2) The index event occurred before the observation period began and the
+  #       outcome even occurred after the observation period ended.
+  #           In this case, the timeDiff value will be the entire length of the
+  #           observation period.
+  
+  fullPeriodEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime > observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  
+  #   (3) The index event occurred before the observation period started and the outcome
+  #       event occurred during the observation period.
+  #           In this case, we treat the events like they are left-censored. We compute 
+  #           timeDiff as outcomeTime - observationPeriod[1]
+  
+  leftCensoredEvents <- relevantEvents %>%
+    filter(indexTime < observationPeriod[1] & outcomeTime >= observationPeriod[1]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), observationPeriod[1])) %>%
+    mutate(status = 0)
+  
+  #   (4) The index event occurred during the observation period and the outcome 
+  #       event occurred after the observation period ended.
+  #           In this case, we treat the events like they are right-censored. We compute
+  #           timeDiff as observationPeriod[2] - indexTime.
+  rightCensoredEvents <- relevantEvents %>%
+    filter(outcomeTime > observationPeriod[2] & indexTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(observationPeriod[2], as_datetime(indexTime))) %>%
+    mutate(status = 0)
+  
+  #   (5) Both the index and outcome events occurred during the observation period.
+  #       These are uncensored events and their timeDiff can remain unchanged.
+  uncensoredEvents <- relevantEvents %>%
+    filter(indexTime >= observationPeriod[1] & outcomeTime <= observationPeriod[2]) %>%
+    mutate(timeDiff = difftime(as_datetime(outcomeTime), as_datetime(indexTime))) %>%
+    mutate(status = 1)
+  
+  # Finally, we just need to combine these three datasets into one:
+  oneQuarterSurvivalData <- bind_rows(fullPeriodEvents, leftCensoredEvents, rightCensoredEvents, uncensoredEvents) %>%
+    mutate(timeDiff = as.double(timeDiff)) %>%
+    mutate(quarter = paste0(year(as_datetime(as.numeric(quarter))), " Q", quarter(as_datetime(as.numeric(quarter)))))
+  quarterlySurvivalData <- bind_rows(quarterlySurvivalData, oneQuarterSurvivalData)
+}
+
+depositToOutcomeQuarterly <- quarterlySurvivalData %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ type))) %>%
+  filter(timeDiff != 0) %>%
+  mutate(istate = "deposit") %>%
+  dplyr::select(id = indexID,
+         time = timeDiff,
+         endpoint,
+         istate,
+         quarter)
+```
+
+```{r}
+smallSet3 <- depositToOutcomeQuarterly %>%
+  slice_sample(prop = 0.05) %>%
+  mutate(cause = as.numeric(endpoint), time = time/86400) %>%
+  filter(quarter != "2020 Q4") %>% 
+  drop_na()
+
+competingRisks3 <- tidycmprsk::crr(Surv(time, endpoint) ~ quarter, data = smallSet3)
+competingRisks3 
+
+cumulativeIncFunction3 <- tidycmprsk::cuminc(Surv(time, endpoint) ~ quarter, data = smallSet3) 
+
+plot3 <- cumulativeIncFunction3 %>% 
+  ggcuminc(outcome = c("withdraw", "liquidation")) + 
+  labs(x = "Days") + 
+  add_confidence_interval() + 
+  ggtitle(label = "How Likely are Users to Keep Accounts open in Each Quarter?")
+
+plot3
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
