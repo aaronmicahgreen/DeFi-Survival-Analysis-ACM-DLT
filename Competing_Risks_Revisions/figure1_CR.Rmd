@@ -31,6 +31,8 @@ transactions <- read_rds("/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/V
 coinTypes <- read_csv("/data/IDEA_DeFi_Research/Data/Coin_Info/stablecoins.csv")
 # Run the files to make the functions that create the survival data:
 source(".././Survival_Data_Creation/createSurvData.R")
+source("./createCRDataTable.R")
+source("./createSurvPlotCR.R")
 
 tFinal <- as_datetime(ymd("2022-10-01"))
 
@@ -76,17 +78,35 @@ borrowToOutcome <- borrowToOutcome %>%
          coinType)
 
 smallSet <- borrowToOutcome %>%
-  slice_sample(prop = 0.05) %>%
+  slice_sample(prop = 1) %>%
   mutate(cause = as.numeric(endpoint), time = time/86400) %>%
   drop_na()
 
-competingRisks <- tidycmprsk::crr(Surv(time, endpoint) ~ coinType, data = smallSet)
-competingRisks
-
-source("./createCRDataTable.R")
-table <- createCRDataTable(smallSet, "coinType")
+crDataTable <- createCRDataTable(smallSet, "coinType")
 
 cumulativeIncFunction <- tidycmprsk::cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) 
+
+strataLabels <- crDataTable %>%
+  select(Strata, Percentage_Strata) %>%
+  distinct()
+
+outcomeLabels <- crDataTable %>%
+  select(Outcome, Percentage_Outcome) %>%
+  distinct()
+
+strataLegendLabels = paste0(strataLabels$Strata, " (", format(round(strataLabels$Percentage_Strata, 2)), "%)")
+outcomeLegendLabels = paste0(outcomeLabels$Outcome, " (", format(round(outcomeLabels$Percentage_Outcome, 2)), "%)")
+
+
+createSurvPlotCR(smallSet,
+                   "coinType",
+                   "How Does Coin Type Affect Repayment time?",
+                   "Days",
+                   "Cumulative Incidence",
+                   strataLegendLabels,
+                   outcomeLegendLabels,
+                   c(.8, .5)
+                   )
 
 plot <- cumulativeIncFunction %>% 
   ggcuminc(outcome = c("repay", "liquidation")) + 
@@ -94,7 +114,10 @@ plot <- cumulativeIncFunction %>%
   add_confidence_interval() + 
   ggtitle(label = "How Does Coin Type Affect Repayment time?") + 
   scale_x_continuous(breaks = seq(0, 650, by = 100)) + 
-  theme(legend.position = c(.8, .5))
+  theme(legend.position = c(.75, .5)) + 
+  scale_fill_hue(name = "Coin Type", labels = strataLegendLabels) +
+  scale_linetype(name = 'Outcome', labels = outcomeLegendLabels) +
+  guides(color = "none")
 
 plot
 
@@ -110,6 +133,6 @@ image=ggpubr::ggpar(plot,
               palette = pubColorScheme)
 
 image
-
-ggsave(file="./Competing_Risks_Figures/borrowToRepayCoinType.pdf", plot=image, width=pubWidth, height=pubHeight)
+saveRDS(plot, file = "./Competing_Risks_Figures/borrowToRepayCoinTypePlot.rds")
+ggsave(file="./Competing_Risks_Figures/borrowToRepayCoinType.pdf", plot, width=pubWidth, height=pubHeight)
 ```

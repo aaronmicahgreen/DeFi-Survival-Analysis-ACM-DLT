@@ -11,10 +11,7 @@ library(cmprsk)
 library(readr)
 library(data.table)
 library(ggpubr)
-```
-
-```{r}
-# Standardize values for publication font sizes and color schemes.
+library(stringr)
 pubFontSize = 18
 pValSize = 8
 pubWidth = 8
@@ -29,7 +26,7 @@ pubColorScheme = "Set1"
 transactions <- read_rds("/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/V2/Mainnet/transactions.rds")
 coinTypes <- read_csv("/data/IDEA_DeFi_Research/Data/Coin_Info/stablecoins.csv")
 # Run the files to make the functions that create the survival data:
-source("../Survival_Data_Creation/createSurvData.R")
+source("./Survival_Data_Creation/createSurvData.R")
 
 tFinal <- as_datetime(ymd("2022-10-01"))
 
@@ -86,13 +83,31 @@ competingRisks
 
 cumulativeIncFunction <- tidycmprsk::cuminc(Surv(time, endpoint) ~ coinType, data = smallSet) 
 
+strataLegendLabels = paste0(crDataTable[[strata]], " (", format(round(crDataTable$Percentage_Strata, 2)), "%)")
+outcomeLegendLabels = paste0(crDataTable[[outcome]], " (", format(round(crDataTable$Percentage_Outcome, 2)), "%)")
+
+source("./ACM-DLT Paper Code/createSurvPlotCR.R")
+
+createSurvPlotCR(smallSet,
+                   "coinType",
+                   "How Does Coin Type Affect Repayment time?",
+                   "Days",
+                   "Cumulative Incidence",
+                   strataLegendLabels,
+                   outcomeLegendLabels,
+                   c(.8, .5)
+                   )
+
 plot <- cumulativeIncFunction %>% 
   ggcuminc(outcome = c("repay", "liquidation")) + 
   labs(x = "Days") + 
   add_confidence_interval() + 
   ggtitle(label = "How Does Coin Type Affect Repayment time?") + 
   scale_x_continuous(breaks = seq(0, 650, by = 100)) + 
-  theme(legend.position = c(.8, .5))
+  theme(legend.position = c(.8, .5)) + 
+  scale_fill_hue(name = 'Strata', labels = strataLegendLabels) +
+  scale_linetype(name = 'Outcome', labels = outcomeLegendLabels) +
+  guides(color = "none")
 
 plot
 
@@ -354,7 +369,22 @@ plot3 <- cumulativeIncFunction3 %>%
 plot3
 ```
 
+```{r}
+strataLegendLabels = paste0(crDataTable[[strata]], " (", format(round(crDataTable$Percentage_Strata, 2)), "%)")
+outcomeLegendLabels = paste0(crDataTable[[outcome]], " (", format(round(crDataTable$Percentage_Outcome, 2)), "%)")
 
+source("./ACM-DLT Paper Code/createSurvPlotCR.R")
+
+createSurvPlotCR(smallSet,
+                   "coinType",
+                   "How Does Coin Type Affect Repayment time?",
+                   "Days",
+                   "Cumulative Incidence",
+                   strataLegendLabels,
+                   outcomeLegendLabels,
+                   c(.8, .5)
+                   )
+```
 
 
 
