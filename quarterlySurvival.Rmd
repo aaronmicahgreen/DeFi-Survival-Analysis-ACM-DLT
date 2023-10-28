@@ -107,7 +107,7 @@ Next we do a bit of pre-processing, setting up a couple of helper functions and 
 cutoffDate = "2022-10-01 00:00:00 UTC"
 
 coinStabilities <- allTransactions %>%
-  select(reserve) %>%
+  dplyr::select(reserve) %>%
   distinct() %>%
   mutate(coinType = case_when(reserve %in% c("USDT", "USDC", "TUSD", "DAI", "SUSD", "USDT.e", "DAI.e", "USDC.e", "BUSD", "GUSD", "LUSD", "USDt", "1DAI", "1USDT", "1USDC", "fUSDT") ~ "Stable",
                               TRUE ~ "Non-Stable"))
@@ -129,16 +129,17 @@ fullDF <- allTransactions %>%
   ungroup()
 
 quarters <- fullDF %>%
-    select(quarter) %>%
+    dplyr::select(quarter) %>%
     distinct() %>%
     arrange(quarter)
 
 users <- fullDF %>%
-  select(user) %>%
+  dplyr::select(user) %>%
   distinct()
 
 survivalData <- NULL
 ```
+
 ```{r}
 sampleProportion = 0.2
 
@@ -155,24 +156,23 @@ df <- fullDF %>%
 ```{r}
 
 for(timeStart in quarters$quarter){
+  timeStart = ceiling_date(as_datetime(timeStart), unit = "quarter")
   timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
 
   indexEvents <- df %>%
     filter(type == "borrow",
            quarter == timeStart) %>%
-    select(where(not_all_na)) %>%
-    mutate(ID = row_number(),
+    dplyr::select(where(not_all_na)) %>%
+    dplyr::mutate(ID = row_number(),
            indexTime = timestamp,
-           indexAmountUSDQuartile = amountUSDQuartile,
-           indexMarketType = marketType)
+           indexAmountUSDQuartile = amountUSDQuartile)
   
   outcomeEvents <- df %>%
     filter(type == "repay",
            quarter == timeStart) %>%
-    select(where(not_all_na)) %>%
+    dplyr::select(where(not_all_na)) %>%
     mutate(outcomeTime = timestamp,
-           outcomeAmountUSDQuartile = amountUSDQuartile,
-           outcomeMarketType = marketType)
+           outcomeAmountUSDQuartile = amountUSDQuartile)
   
   indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
     group_by(ID) %>% 
@@ -184,18 +184,18 @@ for(timeStart in quarters$quarter){
   rightCensoredEvents <- indexToOutcomes %>%
     filter(status == 0) %>%
     group_by(ID) %>%
-    summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    dplyr::summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile) %>%
     distinct()
   
   uncensoredEvents <- indexToOutcomes %>%
     filter(status == 1) %>%
     filter(outcomeTime > indexTime) %>%
-    summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    dplyr::summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile) %>%
     distinct()
   
   leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
     mutate(status = 0) %>%
-    summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile, marketType = outcomeMarketType)
+    dplyr::summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile)
   
   survivalData <- bind_rows(survivalData, rightCensoredEvents, uncensoredEvents, leftCensoredEvents)
 }
@@ -210,7 +210,7 @@ survData <- survivalData %>%
 
 legendLabels <- survData %>%
   group_by(quarter) %>%
-  summarise() %>%
+  dplyr::summarise() %>%
   arrange(quarter)
 
 # These colors were hand-picked from https://r-charts.com/colors/ with the attempt to align the colors with the seasons:
@@ -241,7 +241,7 @@ survPlot
 ```
 
 ```{r, fig.height=10, fig.width = 7.5}
-fit <- coxph(Surv(timeDiff / 86400, as.numeric(status)) ~ reserveType + quarter + amountUSDQuartile + marketType, data = survData)
+fit <- coxph(Surv(timeDiff / 86400, as.numeric(status)) ~ reserveType + quarter + amountUSDQuartile, data = survData)
 ggcoxzph(cox.zph(fit))
 ```
 
@@ -252,28 +252,28 @@ ggforest(fit, data = survData)
 ```{r}
 survivalData <- NULL
 for(timeStart in quarters$quarter){
+  timeStart = ceiling_date(as_datetime(timeStart), unit = "quarter")
   timeFinal = ceiling_date(as_datetime(timeStart+1), unit = "quarter")
 
   indexEvents <- df %>%
     filter(type == "deposit",
            quarter == timeStart) %>%
-    select(where(not_all_na)) %>%
-    mutate(ID = row_number(),
+    dplyr::select(where(not_all_na)) %>%
+    dplyr::mutate(ID = row_number(),
            indexTime = timestamp,
-           indexAmountUSDQuartile = amountUSDQuartile,
-           indexMarketType = marketType)
+           indexAmountUSDQuartile = amountUSDQuartile)
+  
   
   outcomeEvents <- df %>%
     filter(type == "redeem",
            quarter == timeStart) %>%
-    select(where(not_all_na)) %>%
-    mutate(outcomeTime = timestamp,
-           outcomeAmountUSDQuartile = amountUSDQuartile,
-           outcomeMarketType = marketType)
+    dplyr::select(where(not_all_na)) %>%
+    dplyr::mutate(outcomeTime = timestamp,
+           outcomeAmountUSDQuartile = amountUSDQuartile)
   
   indexToOutcomes <- left_join(indexEvents, outcomeEvents, by = c("user", "reserve")) %>% 
     group_by(ID) %>% 
-    mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
+    dplyr::mutate(status = case_when(indexTime >= max(outcomeTime) ~ 0,
                             is.na(outcomeTime) ~ 0,
                             TRUE ~ 1)) %>%
     distinct()
@@ -281,18 +281,18 @@ for(timeStart in quarters$quarter){
   rightCensoredEvents <- indexToOutcomes %>%
     filter(status == 0) %>%
     group_by(ID) %>%
-    summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    dplyr::summarise(user, timeDiff = as.double(timeFinal - indexTime), status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile) %>%
     distinct()
   
   uncensoredEvents <- indexToOutcomes %>%
     filter(status == 1) %>%
     filter(outcomeTime > indexTime) %>%
-    summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile, marketType = indexMarketType) %>%
+    dplyr::summarise(user, timeDiff = min(outcomeTime) - indexTime, status, reserve, reserveType = coinType.x, timeStart, amountUSDQuartile = indexAmountUSDQuartile) %>%
     distinct()
   
   leftCensoredEvents <- anti_join(outcomeEvents, indexEvents, by = c("user", "reserve")) %>%
-    mutate(status = 0) %>%
-    summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile, marketType = outcomeMarketType)
+    dplyr::mutate(status = 0) %>%
+    dplyr::summarise(user, timeDiff = as.double(timestamp - timeStart), status, reserve, reserveType = coinType, timeStart, amountUSDQuartile = outcomeAmountUSDQuartile)
   
   survivalData <- bind_rows(survivalData, rightCensoredEvents, uncensoredEvents, leftCensoredEvents)
 }
@@ -300,15 +300,15 @@ for(timeStart in quarters$quarter){
 
 ```{r, fig.height=10, fig.width=7.5}
 survData <- survivalData %>%
-  mutate(datetime = as_datetime(timeStart)) %>%
+  dplyr::mutate(datetime = as_datetime(timeStart)) %>%
   filter(timeStart != max(quarters$quarter),
          timeStart != min(quarters$quarter)) %>%
-  mutate(quarter = paste0(year(datetime), " Q", quarter(datetime))) %>%
-  select(-datetime, -timeStart)
+  dplyr::mutate(quarter = paste0(year(datetime), " Q", quarter(datetime))) %>%
+  dplyr::select(-datetime, -timeStart)
 
 legendLabels <- survData %>%
   group_by(quarter) %>%
-  summarise() %>%
+  dplyr::summarise() %>%
   arrange(quarter)
 
 # These colors were hand-picked from https://r-charts.com/colors/ with the attempt to align the colors with the seasons:
