@@ -1,7 +1,8 @@
 createCRDataTable <- function(survData, strata) {
   require(tidycmprsk)
-  survData[[strata]] <- as.factor(survData[[strata]])
-  
+  if(strata != "1"){
+    survData[[strata]] <- as.factor(survData[[strata]])
+  }
   # First, we get the relevant information regarding the CSHRs using the multi-state cox model:
   coxFit <- coxph(as.formula(paste0("Surv(time, endpoint) ~ ", strata)), data = survData, id = id)
   covariateLevels <- coxFit$xlevels[[1]]

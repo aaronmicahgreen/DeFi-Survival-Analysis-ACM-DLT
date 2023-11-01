@@ -1,0 +1,116 @@
+```{r}
+source("./dataLoader.R")
+```
+
+```{r}
+indexEventSet = c("deposit")
+outcomeEventSet = c("withdraw", "repay", "borrow", "deposit", "liquidation")
+indexCovs = c("coinType")
+outcomeCovs = c("type")
+observationPeriod <- c(0, tFinal)
+subjects = c("user")
+
+strata = "Outcome_Type"
+
+kmTitle = "How Quickly Do Users Make Transactions After a Deposit?"
+kmXLab = "Time (Days)"
+kmYLab = "Probability of No Other Transaction"
+kmLegendTitle = "Outcome Type"
+kmLegendPosition = c(.8, .8)
+source("../First_Draft_Code/createSurvData.R")
+
+indexEvents <- transactions %>%
+  filter(type == "deposit") %>%
+  select(user, timestamp, type) %>%
+  mutate(indexID = row_number())
+
+outcomeEvents <- transactions %>%
+  filter(type %in% outcomeEventSet) %>%
+  select(user, outcomeTime = timestamp, outcomeType = type)
+
+uncensoredEvents <- left_join(indexEvents, outcomeEvents, by = "user") %>%
+  filter(outcomeTime > timestamp) %>%
+  group_by(indexID) %>%
+  arrange(outcomeTime) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  mutate(status = 1,
+         time = (outcomeTime - timestamp)/86400)
+
+censoredEvents <- anti_join(indexEvents, uncensoredEvents, by = "indexID") %>%
+  mutate(status = 0,
+         time = (1664582400 - timestamp)/86400)
+
+depositToAny <- bind_rows(uncensoredEvents, censoredEvents) %>%
+  mutate(endpoint = as.factor(case_when(status == 0 ~ "censor",
+                           TRUE ~ outcomeType))) %>%
+  filter(time != 0) %>%
+  mutate(istate = "deposit") %>%
+  select(id = indexID,
+         endpoint,
+         istate,
+         time)
+
+smallSet <- depositToAny %>%
+  slice_sample(prop = 1)
+smallSet$endpoint <- fct_relevel(smallSet$endpoint, "censor")
+
+
+devtools::install_github("pharmaverse/ggsurvfit")
+packageVersion("ggsurvfit")
+library(ggsurvfit)
+options("ggsurvfit.switch-color-linetype" = TRUE)
+
+cumulativeIncFunction <- tidycmprsk::cuminc(Surv(time, endpoint) ~ 1, data = smallSet) 
+
+outcomePercentages <- depositToAny %>%
+  filter(endpoint != "censor") %>%
+  group_by(endpoint) %>%
+  summarize(count = n()) %>%
+  mutate(totalCount = sum(count)) %>%
+  mutate(outcomePercent = count*100/totalCount) %>%
+  select(endpoint, outcomePercent)
+
+
+outcomeLegendLabels = paste0(outcomePercentages$endpoint, " (", format(round(outcomePercentages$outcomePercent, 2)), "%)")
+
+
+plot <- cumulativeIncFunction %>% 
+    ggcuminc(outcome = outcomeEventSet[!outcomeEventSet == 'censor']) + 
+    labs(x = "Days", y = "Cumulative Incidence") + 
+    add_confidence_interval() + 
+    ggtitle(label = "How Quickly Do Users Make Transactions After A Deposit?") + 
+    scale_x_continuous(breaks = seq(0, 650, by = 100)) + 
+    theme(legend.position = "right") +
+  scale_linetype(name = 'Outcome', labels = outcomeLegendLabels) 
+
+plot
+saveRDS(cumulativeIncFunction, "./depositToAnyCumInc.rds")
+
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(plot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+image
+
+ggsave(file="./Competing_Risks_Figures/3.1_depositToAny.pdf", plot=image, width=pubWidth+2, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```
+
+```{r}
+depositsWithNoOutcomes <- survivalData %>%
+  filter(is.na(Outcome_Type))
+```

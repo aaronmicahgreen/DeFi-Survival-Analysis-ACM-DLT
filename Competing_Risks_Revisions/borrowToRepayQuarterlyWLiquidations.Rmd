@@ -1,0 +1,199 @@
+```{r}
+if (!require("ggplot2")) {
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+
+if (!require("knitr")) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+if (!require("dplyr")) {
+  install.packages("dplyr")
+  library(dp)
+}
+
+if (!require("RColorBrewer")) {
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+if (!require("beeswarm")) {
+  install.packages("beeswarm")
+  library(beeswarm)
+}
+if (!require("tidyverse")) {
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if (!require("ggbeeswarm")) {
+  install.packages("ggbeeswarm")
+  library(ggbeeswarm)
+}
+if (!require("xts")) {
+  install.packages("xts")
+  library(xts)
+}
+if (!require("plotly")) {
+  install.packages("plotly")
+  library(plotly)
+}
+if(!require("lubridate")) {
+  install.packages("lubridate")
+  library(lubridate)
+}
+if(!require("survival")) {
+  install.packages("survival")
+  library(survival)
+}
+if(!require("survminer")) {
+  install.packages('survminer')
+  library(survminer)
+}
+if(!require("ggfortify")){
+  install.packages("ggfortify")
+  library(ggfortify)
+}
+if(!require("ggpubr")){
+  install.packages("ggpubr")
+  library(ggpubr)
+}
+if(!require("svglite")){
+  install.packages("svglite")
+  library(svglite)
+}
+if(!require("visreg")){
+  install.packages("visreg")
+  library(visreg)
+}
+
+if(!require("casebase")){
+  install.packages("casebase")
+  library(casebase)
+}
+
+if(!require("splines")){
+  install.packages("splines")
+  library(splines)
+}
+pubFontSize = 18
+pubWidth = 8
+pubHeight = 6
+pubColorScheme = "Set1"
+```
+
+```{r}
+# Generate transactions summaries for each deployment of Aave:
+dataPath <- "~/data/IDEA_DeFi_Research/Data/Lending_Protocols/Aave/"
+
+mainnetPath <- paste0(dataPath, "V2/Mainnet/")
+
+transactionsFile <- "transactions.csv"
+
+mainnetTransactions <- read_csv(paste0(mainnetPath, transactionsFile))
+
+```
+
+```{r}
+# Prepare mainnet transactions for creating survival data:
+sampleProportion = 1
+set.seed(69420)
+not_all_na <- function(x) any(!is.na(x))
+`%notin%` <- Negate(`%in%`)
+
+allTransactions <- mainnetTransactions %>%
+  mutate(datetime = as_datetime(timestamp),
+         quarter = floor_date(datetime, unit = "quarter"))
+
+users <- allTransactions %>%
+  select(user) %>%
+  distinct()
+
+sampledUsers <- users %>%
+  slice_sample(prop = sampleProportion)
+
+sampledTransactions <- allTransactions %>%
+  filter(user %in% sampledUsers$user)
+
+quarters <- allTransactions %>%
+  select(quarter) %>%
+  distinct() %>%
+  arrange(quarter) %>%
+  slice(2:8)
+```
+
+```{r}
+indexEventSet = c("borrow")
+outcomeEventSet = c("repay")
+indexCovs = c("datetime" = "datetime")
+outcomeCovs = c("outcomeDatetime" = "datetime")
+joinFeatures = c("user", "reserve")
+
+strata = "Quarter"
+
+kmXLab = "Time (Days)"
+kmYLab = "Probability of No Repayments"
+kmLegendTitle = "Quarter"
+kmLegendPosition = c(.8, .85)
+
+survivalData <- NULL
+
+sampledTransactions <- sampledTransactions %>%
+  mutate(reserve = case_when(type == "liquidation" ~ principalReserve,
+                             TRUE ~ reserve)) %>%
+  mutate(type = case_when(type == "liquidation" ~ "repay",
+                          TRUE ~ type))
+
+for(qtr in quarters$quarter) {
+  qtrStart <- floor_date(as_datetime(qtr), unit = "quarter")
+  qtrEnd <- ceiling_date(as_datetime(qtr+1), unit = "quarter")
+  
+  survivalData <- bind_rows(survivalData, createSurvData(indexEventSet,
+                                           outcomeEventSet,
+                                           data = sampledTransactions,
+                                           joinFeatures,
+                                           observationPeriod = c(qtrStart, qtrEnd),
+                                           indexCovariates = indexCovs,
+                                           outcomeCovariates = outcomeCovs))
+  
+}
+survivalData <- survivalData %>%
+  mutate(datetime = case_when(is.na(datetime) ~ outcomeDatetime,
+                              TRUE ~ datetime)) %>%
+  mutate(Quarter = paste0(year(datetime), " Q", quarter(datetime)))
+source("../First_Draft_Code/createSurvDataTable.R")
+survDataTable <- createSurvDataTable(survivalData, strata)
+
+kmLegendLabels = paste0(survDataTable[[strata]], " (", format(round(survDataTable$Percentage, 2)), "%)")
+source("../First_Draft_Code/createSurvPlot.R")
+survPlot <- createSurvPlot(survivalData,
+                           strata,
+                           "How Have Loan Repayment Times Changed Across Quarters?",
+                           kmXLab,
+                           kmYLab,
+                           kmLegendTitle,
+                           kmLegendLabels,
+                           kmLegendPosition)
+survPlot
+
+```
+
+```{r}
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+image
+ggsave(file="./Competing_Risks_Figures/3.4_borrowToRepayQuarterly.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+
+names(survDataTable) <- gsub("_", " ", names(survDataTable))
+print(xtable(survDataTable, align="l|r|r|l|l|l|"), 
+      include.rownames = FALSE,
+      hline.after = c(-1, 0, nrow(survDataTable), 0:(nrow(survDataTable)-1))
+      )
+```

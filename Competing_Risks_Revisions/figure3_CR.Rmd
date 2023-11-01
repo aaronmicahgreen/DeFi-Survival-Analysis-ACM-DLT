@@ -1,0 +1,91 @@
+```{r}
+source("./dataLoader.R")
+```
+
+```{r}
+allBorrows <- transactions %>%
+  filter(type == "borrow") %>%
+  mutate(amountUSDQuartile = ntile(amountUSD, 4),
+         borrowID = row_number()) %>%
+  group_by(user, reserve) %>%
+  arrange(timestamp) %>%
+  mutate(cumulativeBorrowed = cumsum(amount), 
+         cumulativeBorrowedUSD = cumsum(amountUSD)) %>%
+  ungroup() %>%
+  select(borrowID, user, reserve, timestamp, amountUSDQuartile, cumulativeBorrowed, cumulativeBorrowedUSD)
+
+liquidationsRestructured <- transactions %>%
+  filter(type == "liquidation") %>%
+  mutate(reserve = principalReserve) %>%
+  mutate(amount = principalAmount, amountUSD = principalAmountUSD)
+
+liquidationsAndRepays <- transactions %>%
+  filter(type == "repay") %>%
+  bind_rows(liquidationsRestructured) %>%
+  arrange(timestamp) %>%
+  group_by(user, reserve) %>%
+  mutate(cumulativeRepaid = cumsum(amount), 
+         cumulativeRepaidUSD = cumsum(amountUSD), 
+         cumulativeLiquidated = cumsum(principalAmount), 
+         cumulativeLiquidatedUSD = cumsum(principalAmountUSD)) %>%
+  ungroup() %>%
+  select(outcomeTime = timestamp, user, reserve, cumulativeRepaid,
+         cumulativeRepaidUSD,
+         cumulativeLiquidated,
+         cumulativeLiquidatedUSD)
+
+borrowsAndRepays <- allBorrows %>%
+  left_join(liquidationsAndRepays, by = c("user", "reserve")) %>%
+  filter(outcomeTime >= timestamp) %>%
+  arrange(timestamp) %>%
+  filter(cumulativeRepaid >= cumulativeBorrowed) %>%
+  group_by(borrowID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+uncensoredEvents <- borrowsAndRepays %>%
+  mutate(status = 1,
+         time = (outcomeTime - timestamp)/86400)
+
+censoredEvents <- allBorrows %>%
+  anti_join(uncensoredEvents, by = "borrowID") %>%
+  mutate(status = 0,
+         time = (1664582400 - timestamp)/86400)
+
+allEvents <- bind_rows(uncensoredEvents, censoredEvents)
+
+survFit <- surv_fit(Surv(time, status) ~ amountUSDQuartile, data = allEvents)
+survPlot <- ggsurvplot(survFit,
+             censor = FALSE,
+             title = "How Does Loan Size Affect the Length of Loans?",
+             xlab = "Time (Days)",
+             break.x.by = 100,
+             ylab = "Probability of Remaining Loan Balance",
+             xlim = c(0, max(allEvents$time)),
+             legend.title = "Loan Size Percentile",
+             conf.int = TRUE,
+             legend.labs = c("1-25%","26-50%", "51-75%", "76-100%"),
+             legend = c(.8, .8),
+             subtitle = paste0("p-value (log-rank test): ", case_when(surv_pvalue(survFit, allEvents)$pval == 0 ~ "< 1e-16",
+                                                                      TRUE ~ as.character(surv_pvalue(survFit, allEvents)$pval)))
+             )
+  
+# Create publication-ready plot and output the LaTeX table:
+image=ggpubr::ggpar(survPlot,
+              font.legend = list(size = pubFontSize),
+              font.xtickslab = list(size = pubFontSize),
+              font.ytickslab = list(size = pubFontSize),
+              font.x = list(size = pubFontSize),
+              font.y = list(size = pubFontSize),
+              font.subtitle = list(size = pubFontSize),
+              palette = pubColorScheme)
+image
+ggsave(file="./Competing_Risks_Figures/3.2_borrowToFullRepayLoanAmount.pdf", plot=image$plot, width=pubWidth, height=pubHeight)
+```
+
+```{r}
+source("./createSurvDataTable.R")
+survDataTable <- createSurvDataTable(allEvents, "amountUSDQuartile")
+
+xtable(survDataTable)
+```
